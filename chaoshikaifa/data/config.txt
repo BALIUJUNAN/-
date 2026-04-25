@@ -1,0 +1,7 @@
+# 超市管理系统配置
+shop_name=超市管理系统
+shop_address=
+shop_phone=
+tax_rate=0.00
+auto_backup_interval=30
+monthly_fixed_cost=10000.00
