@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>会员管理 - 超市管理系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f5f5f5; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px 30px; display: flex; justify-content: space-between; }
+        .header h1 { font-size: 22px; }
+        .header a { color: white; text-decoration: none; }
+        .nav { background: white; padding: 0 30px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .nav ul { list-style: none; display: flex; }
+        .nav li a { display: block; padding: 15px 20px; color: #333; text-decoration: none; border-bottom: 3px solid transparent; }
+        .nav li a:hover, .nav li a.active { color: #667eea; border-bottom-color: #667eea; }
+        .container { padding: 20px 30px; max-width: 1400px; margin: 0 auto; }
+        .card { background: white; border-radius: 10px; padding: 25px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .card h2 { margin-bottom: 20px; }
+        .toolbar { display: flex; gap: 10px; margin-bottom: 20px; }
+        .toolbar input { padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-success { background: #2ecc71; color: white; }
+        .btn-danger { background: #e74c3c; color: white; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #f0f0f0; }
+        th { background: #f8f9fa; font-weight: 600; }
+        .level-badge { padding: 4px 10px; border-radius: 12px; font-size: 12px; }
+        .level-0 { background: #e0e0e0; color: #666; }
+        .level-1 { background: #c0c0c0; color: #555; }
+        .level-2 { background: #ffd700; color: #8b6914; }
+        .level-3 { background: #e6e6fa; color: #6a5acd; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; }
+        .modal.show { display: flex; }
+        .modal-content { background: white; padding: 30px; border-radius: 10px; width: 400px; }
+        .modal-content h3 { margin-bottom: 20px; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: 500; }
+        .form-group input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        .form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>👥 会员管理</h1>
+        <a href="/">← 返回首页</a>
+    </div>
+    <div class="nav">
+        <ul>
+            <li><a href="/">首页</a></li>
+            <li><a href="/sale">销售收银</a></li>
+            <li><a href="/products">商品管理</a></li>
+            <li><a href="/members" class="active">会员管理</a></li>
+            <li><a href="/vipcards">储值卡</a></li>
+            <li><a href="/promotions">促销管理</a></li>
+            <li><a href="/reports">报表统计</a></li>
+        </ul>
+    </div>
+    
+    <div class="container">
+        <div class="card">
+            <div class="toolbar">
+                <input type="text" id="searchInput" placeholder="搜索手机号或姓名...">
+                <button class="btn btn-primary" onclick="searchMembers()">搜索</button>
+                <button class="btn btn-success" onclick="showAddModal()">+ 添加会员</button>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>姓名</th>
+                        <th>手机号</th>
+                        <th>等级</th>
+                        <th>积分</th>
+                        <th>累计消费</th>
+                        <th>注册时间</th>
+                    </tr>
+                </thead>
+                <tbody id="memberTable"></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <div class="modal" id="memberModal">
+        <div class="modal-content">
+            <h3>添加会员</h3>
+            <div class="form-group">
+                <label>姓名</label>
+                <input type="text" id="memberName" placeholder="会员姓名">
+            </div>
+            <div class="form-group">
+                <label>手机号</label>
+                <input type="text" id="memberPhone" placeholder="手机号码">
+            </div>
+            <div class="form-actions">
+                <button class="btn" onclick="closeModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveMember()">保存</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function loadMembers() {
+            fetch('/api/members')
+                .then(r => r.json())
+                .then(data => renderTable(data));
+        }
+        
+        function getLevelName(level) {
+            const names = ['普通会员', '银卡会员', '金卡会员', '钻石会员'];
+            return names[level] || '普通会员';
+        }
+        
+        function formatTime(ts) {
+            if (!ts) return '-';
+            return new Date(ts * 1000).toLocaleString('zh-CN');
+        }
+        
+        function renderTable(data) {
+            const tbody = document.getElementById('memberTable');
+            if (!data.length) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">暂无会员</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.map(m => `
+                <tr>
+                    <td>${m.id}</td>
+                    <td>${m.name}</td>
+                    <td>${m.phone}</td>
+                    <td><span class="level-badge level-${m.level}">${getLevelName(m.level)}</span></td>
+                    <td>${m.points}</td>
+                    <td>¥${(m.total_consume || 0).toFixed(2)}</td>
+                    <td>${formatTime(m.created_at)}</td>
+                </tr>
+            `).join('');
+        }
+        
+        function searchMembers() {
+            const keyword = document.getElementById('searchInput').value;
+            fetch(`/api/member/search?keyword=${encodeURIComponent(keyword)}`)
+                .then(r => r.json())
+                .then(data => renderTable(data));
+        }
+        
+        function showAddModal() {
+            document.getElementById('memberName').value = '';
+            document.getElementById('memberPhone').value = '';
+            document.getElementById('memberModal').classList.add('show');
+        }
+        
+        function closeModal() {
+            document.getElementById('memberModal').classList.remove('show');
+        }
+        
+        function saveMember() {
+            const data = {
+                name: document.getElementById('memberName').value,
+                phone: document.getElementById('memberPhone').value
+            };
+            fetch('/api/member', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.success) {
+                    closeModal();
+                    loadMembers();
+                }
+            });
+        }
+        
+        loadMembers();
+    </script>
+</body>
+</html>

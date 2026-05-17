@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>商品管理 - 超市管理系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f5f5f5; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px 30px; display: flex; justify-content: space-between; }
+        .header h1 { font-size: 22px; }
+        .header a { color: white; text-decoration: none; }
+        .nav { background: white; padding: 0 30px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .nav ul { list-style: none; display: flex; }
+        .nav li a { display: block; padding: 15px 20px; color: #333; text-decoration: none; border-bottom: 3px solid transparent; }
+        .nav li a:hover, .nav li a.active { color: #667eea; border-bottom-color: #667eea; }
+        .container { padding: 20px 30px; max-width: 1400px; margin: 0 auto; }
+        .card { background: white; border-radius: 10px; padding: 25px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .card h2 { margin-bottom: 20px; }
+        .toolbar { display: flex; gap: 10px; margin-bottom: 20px; }
+        .toolbar input { padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        .toolbar input[type="text"] { flex: 1; }
+        .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-success { background: #2ecc71; color: white; }
+        .btn-danger { background: #e74c3c; color: white; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #f0f0f0; }
+        th { background: #f8f9fa; font-weight: 600; }
+        tr:hover { background: #f8f9fa; }
+        .stock-low { color: #dc3545; font-weight: bold; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 1000; }
+        .modal.show { display: flex; }
+        .modal-content { background: white; padding: 30px; border-radius: 10px; width: 500px; }
+        .modal-content h3 { margin-bottom: 20px; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: 500; }
+        .form-group input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        .form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📦 商品管理</h1>
+        <a href="/">← 返回首页</a>
+    </div>
+    <div class="nav">
+        <ul>
+            <li><a href="/">首页</a></li>
+            <li><a href="/sale">销售收银</a></li>
+            <li><a href="/products" class="active">商品管理</a></li>
+            <li><a href="/members">会员管理</a></li>
+            <li><a href="/vipcards">储值卡</a></li>
+            <li><a href="/promotions">促销管理</a></li>
+            <li><a href="/reports">报表统计</a></li>
+        </ul>
+    </div>
+    
+    <div class="container">
+        <div class="card">
+            <div class="toolbar">
+                <input type="text" id="searchInput" placeholder="搜索商品名称或条码...">
+                <button class="btn btn-primary" onclick="searchProducts()">搜索</button>
+                <button class="btn btn-success" onclick="showAddModal()">+ 添加商品</button>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>编号</th>
+                        <th>条码</th>
+                        <th>名称</th>
+                        <th>售价</th>
+                        <th>进价</th>
+                        <th>库存</th>
+                        <th>分类</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="productTable"></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- 添加/编辑弹窗 -->
+    <div class="modal" id="productModal">
+        <div class="modal-content">
+            <h3 id="modalTitle">添加商品</h3>
+            <input type="hidden" id="productId">
+            <div class="form-group">
+                <label>编号</label>
+                <input type="text" id="productCode" placeholder="如 P001">
+            </div>
+            <div class="form-group">
+                <label>条码</label>
+                <input type="text" id="productBarcode" placeholder="商品条码">
+            </div>
+            <div class="form-group">
+                <label>名称</label>
+                <input type="text" id="productName" placeholder="商品名称">
+            </div>
+            <div class="form-group">
+                <label>售价 (元)</label>
+                <input type="number" step="0.01" id="productPrice">
+            </div>
+            <div class="form-group">
+                <label>进价 (元)</label>
+                <input type="number" step="0.01" id="productCost">
+            </div>
+            <div class="form-group">
+                <label>库存</label>
+                <input type="number" id="productStock" value="0">
+            </div>
+            <div class="form-group">
+                <label>分类</label>
+                <input type="text" id="productCategory" placeholder="如 饮料、食品">
+            </div>
+            <div class="form-actions">
+                <button class="btn" onclick="closeModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveProduct()">保存</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let products = [];
+        
+        function loadProducts() {
+            fetch('/api/products')
+                .then(r => r.json())
+                .then(data => {
+                    products = data;
+                    renderTable(data);
+                });
+        }
+        
+        function renderTable(data) {
+            const tbody = document.getElementById('productTable');
+            if (!data.length) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;">暂无商品</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.map(p => `
+                <tr>
+                    <td>${p.id}</td>
+                    <td>${p.barcode || '-'}</td>
+                    <td>${p.name}</td>
+                    <td>¥${p.price.toFixed(2)}</td>
+                    <td>¥${(p.cost || 0).toFixed(2)}</td>
+                    <td class="${p.stock < 10 ? 'stock-low' : ''}">${p.stock}${p.stock < 10 ? ' ⚠️' : ''}</td>
+                    <td>${p.category || '-'}</td>
+                    <td>
+                        <button class="btn btn-primary" onclick="editProduct('${p.id}')">编辑</button>
+                        <button class="btn btn-danger" onclick="deleteProduct('${p.id}')">删除</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+        
+        function searchProducts() {
+            const keyword = document.getElementById('searchInput').value;
+            fetch(`/api/product/search?keyword=${encodeURIComponent(keyword)}`)
+                .then(r => r.json())
+                .then(data => renderTable(data));
+        }
+        
+        function showAddModal() {
+            document.getElementById('modalTitle').textContent = '添加商品';
+            document.getElementById('productId').value = '';
+            document.getElementById('productCode').value = '';
+            document.getElementById('productBarcode').value = '';
+            document.getElementById('productName').value = '';
+            document.getElementById('productPrice').value = '';
+            document.getElementById('productCost').value = '';
+            document.getElementById('productStock').value = '0';
+            document.getElementById('productCategory').value = '';
+            document.getElementById('productModal').classList.add('show');
+        }
+        
+        function editProduct(id) {
+            const p = products.find(prod => prod.id === id);
+            if (!p) return;
+            document.getElementById('modalTitle').textContent = '编辑商品';
+            document.getElementById('productId').value = p.id;
+            document.getElementById('productCode').value = p.id;
+            document.getElementById('productBarcode').value = p.barcode || '';
+            document.getElementById('productName').value = p.name;
+            document.getElementById('productPrice').value = p.price;
+            document.getElementById('productCost').value = p.cost || '';
+            document.getElementById('productStock').value = p.stock;
+            document.getElementById('productCategory').value = p.category || '';
+            document.getElementById('productModal').classList.add('show');
+        }
+        
+        function closeModal() {
+            document.getElementById('productModal').classList.remove('show');
+        }
+        
+        function saveProduct() {
+            const id = document.getElementById('productId').value;
+            const data = {
+                id: document.getElementById('productCode').value,
+                barcode: document.getElementById('productBarcode').value,
+                name: document.getElementById('productName').value,
+                price: parseFloat(document.getElementById('productPrice').value),
+                cost: parseFloat(document.getElementById('productCost').value) || 0,
+                stock: parseInt(document.getElementById('productStock').value) || 0,
+                category: document.getElementById('productCategory').value
+            };
+            
+            const method = id ? 'PUT' : 'POST';
+            fetch(`/api/product${id ? '/' + id : ''}`, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.success) {
+                    closeModal();
+                    loadProducts();
+                }
+            });
+        }
+        
+        function deleteProduct(id) {
+            if (!confirm('确定删除此商品？')) return;
+            fetch(`/api/product/${id}`, { method: 'DELETE' })
+                .then(r => r.json())
+                .then(result => {
+                    if (result.success) loadProducts();
+                });
+        }
+        
+        loadProducts();
+    </script>
+</body>
+</html>

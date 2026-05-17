@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>销售收银 - 超市管理系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background: #f5f5f5;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 { font-size: 22px; }
+        .header a { color: white; text-decoration: none; }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 20px;
+            padding: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+            height: calc(100vh - 70px);
+        }
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+        }
+        .card h2 {
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        .search-box {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .search-box input {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        .search-box button {
+            padding: 12px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .product-list {
+            flex: 1;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            border-radius: 5px;
+        }
+        .product-item {
+            padding: 12px 15px;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .product-item:hover { background: #f8f9fa; }
+        .product-info .name { font-weight: 600; color: #333; }
+        .product-info .barcode { color: #999; font-size: 12px; }
+        .product-price { color: #e74c3c; font-weight: bold; }
+        .cart-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+        .cart-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .cart-item-info .name { font-weight: 600; }
+        .cart-item-info .price { color: #666; font-size: 14px; }
+        .cart-item-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .qty-btn {
+            width: 28px;
+            height: 28px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background: white;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .qty-btn:hover { background: #f0f0f0; }
+        .cart-summary {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 2px solid #eee;
+        }
+        .cart-summary .total {
+            display: flex;
+            justify-content: space-between;
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+        .cart-summary .total .amount { color: #e74c3c; }
+        .member-section {
+            margin-bottom: 15px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }
+        .member-section .member-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .member-section .member-name {
+            font-weight: 600;
+            color: #667eea;
+        }
+        .member-section .member-level {
+            font-size: 12px;
+            color: #999;
+        }
+        .payment-methods {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .payment-option {
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .payment-option:hover { border-color: #667eea; }
+        .payment-option.selected {
+            border-color: #667eea;
+            background: #f0f5ff;
+            color: #667eea;
+        }
+        .btn-secondary {
+            background: #95a5a6;
+            color: white;
+        }
+        .btn-secondary:hover { background: #7f8c8d; }
+        .modal-small { width: 400px; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: 500; }
+        .form-group input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        .refund-list { max-height: 400px; overflow-y: auto; }
+        .refund-item { padding: 15px; border-bottom: 1px solid #eee; cursor: pointer; }
+        .refund-item:hover { background: #f8f9fa; }
+        .btn-checkout {
+            width: 100%;
+            padding: 15px;
+            background: #2ecc71;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 18px;
+            cursor: pointer;
+        }
+        .btn-checkout:hover { background: #27ae60; }
+        .btn-checkout:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .empty-cart {
+            text-align: center;
+            color: #999;
+            padding: 40px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>💰 销售收银</h1>
+        <div style="display:flex;gap:10px;">
+            <button class="btn btn-secondary" onclick="showRefundModal()" style="background:#e74c3c;color:white;border:none;padding:8px 15px;border-radius:5px;cursor:pointer;">🔙 退款</button>
+            <button class="btn btn-secondary" onclick="loadTodayOrders()" style="background:#3498db;color:white;border:none;padding:8px 15px;border-radius:5px;cursor:pointer;">📋 今日订单</button>
+            <a href="/" style="color:white;text-decoration:none;padding:8px 15px;background:rgba(255,255,255,0.2);border-radius:5px;">← 返回首页</a>
+        </div>
+    </div>
+    
+    <div class="container">
+        <div class="card">
+            <h2>📦 商品列表</h2>
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="输入条码或名称搜索...">
+                <button onclick="searchProducts()">搜索</button>
+            </div>
+            <div class="product-list" id="productList"></div>
+        </div>
+        
+        <div class="card">
+            <h2>🛒 购物车</h2>
+            
+            <div class="member-section" id="memberSection" style="display:none;">
+                <div class="member-info">
+                    <div>
+                        <div class="member-name" id="memberName">-</div>
+                        <div class="member-level" id="memberLevel">-</div>
+                    </div>
+                    <button class="btn" onclick="clearMember()" style="background:#e74c3c;color:white;">解除</button>
+                </div>
+            </div>
+            
+            <div id="memberSelect">
+                <input type="text" id="memberSearch" placeholder="输入手机号或姓名查找会员" 
+                       style="width:100%;padding:10px;margin-bottom:10px;border:1px solid #ddd;border-radius:5px;">
+                <div id="memberResults" style="max-height:100px;overflow-y:auto;"></div>
+                <button onclick="clearMemberSearch()" class="btn" style="margin-top:5px;">清除</button>
+            </div>
+            
+            <div class="cart-list" id="cartList">
+                <div class="empty-cart">购物车为空</div>
+            </div>
+            
+            <div class="cart-summary">
+                <div class="total">
+                    <span>合计</span>
+                    <span class="amount" id="cartTotal">¥0.00</span>
+                </div>
+                
+                <div class="payment-methods">
+                    <div class="payment-option selected" data-method="现金">💵 现金</div>
+                    <div class="payment-option" data-method="微信">💚 微信</div>
+                    <div class="payment-option" data-method="支付宝">💙 支付宝</div>
+                    <div class="payment-option" data-method="储值卡" id="vipCardOption">💳 储值卡</div>
+                </div>
+                
+                <button class="btn-checkout" id="checkoutBtn" onclick="checkout()">结 算</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 退款弹窗 -->
+    <div class="modal" id="refundModal">
+        <div class="modal-content modal-small">
+            <h3>退款订单</h3>
+            <div class="refund-list" id="refundList">
+                <div style="text-align:center;padding:20px;color:#999;">加载中...</div>
+            </div>
+            <div style="margin-top:15px;">
+                <label>退款原因（可选）</label>
+                <input type="text" id="refundReason" placeholder="请输入退款原因">
+            </div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeRefundModal()">取消</button>
+                <button class="btn btn-danger" onclick="confirmRefund()">确认退款</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 小票打印弹窗 -->
+    <div class="modal" id="printModal">
+        <div class="modal-content" style="width:350px;">
+            <h3>小票预览</h3>
+            <div id="receiptContent" style="background:#f9f9f9;padding:15px;border:1px solid #ddd;max-height:500px;overflow-y:auto;"></div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closePrintModal()">关闭</button>
+                <button class="btn btn-primary" onclick="printReceipt()">打印</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 今日订单弹窗 -->
+    <div class="modal" id="todayOrdersModal">
+        <div class="modal-content" style="width:600px;">
+            <h3>今日订单</h3>
+            <div id="todayOrdersList" style="max-height:400px;overflow-y:auto;"></div>
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="closeTodayOrdersModal()">关闭</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let cart = [];
+        let currentMember = null;
+        let currentPayment = '现金';
+        
+        // 加载商品
+        function loadProducts() {
+            fetch('/api/products')
+                .then(r => r.json())
+                .then(data => {
+                    renderProducts(data);
+                });
+        }
+        
+        function renderProducts(products) {
+            const list = document.getElementById('productList');
+            if (!products.length) {
+                list.innerHTML = '<div style="padding:20px;text-align:center;color:#999;">暂无商品</div>';
+                return;
+            }
+            list.innerHTML = products.map(p => `
+                <div class="product-item" onclick="addToCart('${p.id}', '${p.name}', ${p.price})">
+                    <div class="product-info">
+                        <div class="name">${p.name}</div>
+                        <div class="barcode">${p.barcode || p.id} | 库存: ${p.stock}</div>
+                    </div>
+                    <div class="product-price">¥${p.price.toFixed(2)}</div>
+                </div>
+            `).join('');
+        }
+        
+        function searchProducts() {
+            const keyword = document.getElementById('searchInput').value;
+            fetch(`/api/product/search?keyword=${encodeURIComponent(keyword)}`)
+                .then(r => r.json())
+                .then(data => renderProducts(data));
+        }
+        
+        // 购物车
+        function addToCart(id, name, price) {
+            const existing = cart.find(item => item.id === id);
+            if (existing) {
+                existing.quantity++;
+            } else {
+                cart.push({ id, name, price, quantity: 1 });
+            }
+            renderCart();
+        }
+        
+        function updateQty(id, delta) {
+            const item = cart.find(i => i.id === id);
+            if (item) {
+                item.quantity += delta;
+                if (item.quantity <= 0) {
+                    cart = cart.filter(i => i.id !== id);
+                }
+            }
+            renderCart();
+        }
+        
+        function removeItem(id) {
+            cart = cart.filter(i => i.id !== id);
+            renderCart();
+        }
+        
+        function renderCart() {
+            const list = document.getElementById('cartList');
+            if (!cart.length) {
+                list.innerHTML = '<div class="empty-cart">购物车为空</div>';
+                document.getElementById('cartTotal').textContent = '¥0.00';
+                document.getElementById('checkoutBtn').disabled = true;
+                return;
+            }
+            
+            list.innerHTML = cart.map(item => `
+                <div class="cart-item">
+                    <div class="cart-item-info">
+                        <div class="name">${item.name}</div>
+                        <div class="price">¥${item.price.toFixed(2)} × ${item.quantity}</div>
+                    </div>
+                    <div class="cart-item-actions">
+                        <button class="qty-btn" onclick="updateQty('${item.id}', -1)">-</button>
+                        <span>${item.quantity}</span>
+                        <button class="qty-btn" onclick="updateQty('${item.id}', 1)">+</button>
+                        <button class="btn btn-danger" onclick="removeItem('${item.id}')" style="padding:5px 10px;">删除</button>
+                    </div>
+                </div>
+            `).join('');
+            
+            const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+            document.getElementById('cartTotal').textContent = '¥' + total.toFixed(2);
+            document.getElementById('checkoutBtn').disabled = false;
+        }
+        
+        // 会员
+        document.getElementById('memberSearch').addEventListener('input', function(e) {
+            const keyword = e.target.value;
+            if (keyword.length < 2) {
+                document.getElementById('memberResults').innerHTML = '';
+                return;
+            }
+            fetch(`/api/member/search?keyword=${encodeURIComponent(keyword)}`)
+                .then(r => r.json())
+                .then(data => {
+                    const results = document.getElementById('memberResults');
+                    results.innerHTML = data.map(m => `
+                        <div style="padding:8px;cursor:pointer;border-bottom:1px solid #eee;" 
+                             onclick="selectMember(${m.id}, '${m.name}', ${m.level})">
+                            ${m.name} - ${m.phone}
+                        </div>
+                    `).join('');
+                });
+        });
+        
+        function selectMember(id, name, level) {
+            currentMember = { id, name, level };
+            document.getElementById('memberSection').style.display = 'block';
+            document.getElementById('memberName').textContent = name;
+            document.getElementById('memberLevel').textContent = ['普通会员', '银卡会员', '金卡会员', '钻石会员'][level] || '普通会员';
+            document.getElementById('memberResults').innerHTML = '';
+            document.getElementById('memberSearch').value = '';
+        }
+        
+        function clearMember() {
+            currentMember = null;
+            document.getElementById('memberSection').style.display = 'none';
+        }
+        
+        function clearMemberSearch() {
+            document.getElementById('memberSearch').value = '';
+            document.getElementById('memberResults').innerHTML = '';
+        }
+        
+        // 支付方式
+        document.querySelectorAll('.payment-option').forEach(opt => {
+            opt.addEventListener('click', function() {
+                document.querySelectorAll('.payment-option').forEach(o => o.classList.remove('selected'));
+                this.classList.add('selected');
+                currentPayment = this.dataset.method;
+            });
+        });
+        
+        // 结算
+        async function checkout() {
+            if (!cart.length) return;
+            
+            const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+            let finalAmount = total;
+            
+            // 如果使用储值卡，检查余额
+            if (currentPayment === '储值卡' && currentMember) {
+                // 这里可以调用 API 检查储值卡余额
+            }
+            
+            const data = {
+                items: cart,
+                member_id: currentMember ? currentMember.id : null,
+                member_level: currentMember ? currentMember.level : 0,
+                payment_method: currentPayment
+            };
+            
+            try {
+                const res = await fetch('/api/sale/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                
+                const result = await res.json();
+                
+                if (result.success) {
+                    alert(`结算成功！实收金额：¥${result.final_amount.toFixed(2)}\n\n订单号：#${result.sale_id}`);
+                    cart = [];
+                    renderCart();
+                    if (currentMember) {
+                        // 可以更新会员信息显示
+                    }
+                    // 询问是否打印小票
+                    if (confirm('是否打印小票？')) {
+                        showPrintModal(result.sale_id);
+                    }
+                } else {
+                    alert('结算失败：' + (result.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('结算失败：' + e.message);
+            }
+        }
+        
+        // 初始化
+        loadProducts();
+        renderCart();
+        
+        // 储值卡支付需要密码
+        document.getElementById('vipCardOption').addEventListener('click', function() {
+            if (currentMember) {
+                const pwd = prompt('请输入储值卡密码：');
+                if (pwd !== null) {
+                    currentVipPassword = pwd;
+                }
+            }
+        });
+        
+        // 退款功能
+        let selectedRefundSale = null;
+        
+        function showRefundModal() {
+            selectedRefundSale = null;
+            document.getElementById('refundList').innerHTML = '<div style="text-align:center;padding:20px;color:#999;">加载中...</div>';
+            document.getElementById('refundReason').value = '';
+            document.getElementById('refundModal').classList.add('show');
+            
+            fetch('/api/sales/refundable')
+                .then(r => r.json())
+                .then(data => {
+                    const list = document.getElementById('refundList');
+                    if (!data.sales || data.sales.length === 0) {
+                        list.innerHTML = '<div style="text-align:center;padding:20px;color:#999;">今日暂无可退款的订单</div>';
+                        return;
+                    }
+                    list.innerHTML = data.sales.map(s => `
+                        <div class="refund-item" onclick="selectRefundSale(${s.id}, ${s.final_amount})">
+                            <div style="display:flex;justify-content:space-between;">
+                                <span>订单 #${s.id}</span>
+                                <span style="color:#e74c3c;font-weight:bold;">¥${s.final_amount.toFixed(2)}</span>
+                            </div>
+                            <div style="font-size:12px;color:#666;margin-top:5px;">
+                                ${s.cashier_name || '未知'} | ${new Date(s.created_at * 1000).toLocaleString()} | ${s.payment_method}
+                            </div>
+                        </div>
+                    `).join('');
+                });
+        }
+        
+        function selectRefundSale(saleId, amount) {
+            selectedRefundSale = { id: saleId, amount: amount };
+            document.querySelectorAll('.refund-item').forEach(el => el.style.background = '');
+            event.currentTarget.style.background = '#ffe6e6';
+        }
+        
+        function closeRefundModal() {
+            document.getElementById('refundModal').classList.remove('show');
+        }
+        
+        async function confirmRefund() {
+            if (!selectedRefundSale) {
+                alert('请选择要退款的订单');
+                return;
+            }
+            
+            if (!confirm(`确定退款订单 #${selectedRefundSale.id} 吗？将退还 ¥${selectedRefundSale.amount.toFixed(2)}`)) {
+                return;
+            }
+            
+            const reason = document.getElementById('refundReason').value;
+            
+            try {
+                const res = await fetch('/api/sale/refund', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sale_id: selectedRefundSale.id,
+                        reason: reason
+                    })
+                });
+                
+                const result = await res.json();
+                
+                if (result.success) {
+                    alert(`退款成功！退还金额：¥${result.refund_amount.toFixed(2)}`);
+                    closeRefundModal();
+                } else {
+                    alert('退款失败：' + (result.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('退款失败：' + e.message);
+            }
+        }
+        
+        // 小票打印功能
+        let currentPrintSaleId = null;
+        
+        async function showPrintModal(saleId) {
+            currentPrintSaleId = saleId;
+            document.getElementById('printModal').classList.add('show');
+            
+            try {
+                const res = await fetch(`/api/sale/${saleId}/receipt`);
+                const html = await res.text();
+                document.getElementById('receiptContent').innerHTML = html;
+            } catch (e) {
+                document.getElementById('receiptContent').innerHTML = '<div style="color:red;">加载小票失败</div>';
+            }
+        }
+        
+        function closePrintModal() {
+            document.getElementById('printModal').classList.remove('show');
+        }
+        
+        function printReceipt() {
+            const content = document.getElementById('receiptContent').innerHTML;
+            const printWindow = window.open('', '_blank');
+            printWindow.document.write(content);
+            printWindow.document.close();
+            printWindow.print();
+        }
+        
+        // 今日订单功能
+        function loadTodayOrders() {
+            document.getElementById('todayOrdersModal').classList.add('show');
+            document.getElementById('todayOrdersList').innerHTML = '<div style="text-align:center;padding:20px;color:#999;">加载中...</div>';
+            
+            fetch('/api/sales/today')
+                .then(r => r.json())
+                .then(data => {
+                    const list = document.getElementById('todayOrdersList');
+                    if (!data.sales || data.sales.length === 0) {
+                        list.innerHTML = '<div style="text-align:center;padding:20px;color:#999;">今日暂无订单</div>';
+                        return;
+                    }
+                    list.innerHTML = `
+                        <div style="margin-bottom:15px;padding:10px;background:#f8f9fa;border-radius:5px;">
+                            <strong>订单数：</strong>${data.count} &nbsp;&nbsp;
+                            <strong>总金额：</strong>¥${data.total.toFixed(2)}
+                        </div>
+                        <table style="width:100%;border-collapse:collapse;">
+                            <tr style="background:#f0f0f0;">
+                                <th style="padding:8px;border:1px solid #ddd;">订单号</th>
+                                <th style="padding:8px;border:1px solid #ddd;">金额</th>
+                                <th style="padding:8px;border:1px solid #ddd;">支付方式</th>
+                                <th style="padding:8px;border:1px solid #ddd;">操作</th>
+                            </tr>
+                            ${data.sales.map(s => `
+                                <tr>
+                                    <td style="padding:8px;border:1px solid #ddd;">#${s.id}</td>
+                                    <td style="padding:8px;border:1px solid #ddd;color:#e74c3c;">¥${s.final_amount.toFixed(2)}</td>
+                                    <td style="padding:8px;border:1px solid #ddd;">${s.payment_method}</td>
+                                    <td style="padding:8px;border:1px solid #ddd;">
+                                        <button class="btn btn-primary" onclick="showPrintModal(${s.id})" style="padding:5px 10px;font-size:12px;">打印</button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </table>
+                    `;
+                });
+        }
+        
+        function closeTodayOrdersModal() {
+            document.getElementById('todayOrdersModal').classList.remove('show');
+        }
+    </script>
+</body>
+</html>

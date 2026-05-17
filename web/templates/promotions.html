@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>促销管理 - 超市管理系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f5f5f5; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px 30px; display: flex; justify-content: space-between; }
+        .header h1 { font-size: 22px; }
+        .header a { color: white; text-decoration: none; }
+        .nav { background: white; padding: 0 30px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .nav ul { list-style: none; display: flex; }
+        .nav li a { display: block; padding: 15px 20px; color: #333; text-decoration: none; border-bottom: 3px solid transparent; }
+        .nav li a:hover, .nav li a.active { color: #667eea; border-bottom-color: #667eea; }
+        .container { padding: 20px 30px; max-width: 1400px; margin: 0 auto; }
+        .card { background: white; border-radius: 10px; padding: 25px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .card h2 { margin-bottom: 20px; }
+        .toolbar { display: flex; gap: 10px; margin-bottom: 20px; }
+        .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-success { background: #2ecc71; color: white; }
+        .btn-danger { background: #e74c3c; color: white; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #f0f0f0; }
+        th { background: #f8f9fa; font-weight: 600; }
+        .type-badge { padding: 4px 10px; border-radius: 12px; font-size: 12px; }
+        .type-0 { background: #d1ecf1; color: #0c5460; }
+        .type-1 { background: #d4edda; color: #155724; }
+        .type-2 { background: #fff3cd; color: #856404; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; }
+        .modal.show { display: flex; }
+        .modal-content { background: white; padding: 30px; border-radius: 10px; width: 450px; }
+        .modal-content h3 { margin-bottom: 20px; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: 500; }
+        .form-group input, .form-group select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        .form-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎁 促销管理</h1>
+        <a href="/">← 返回首页</a>
+    </div>
+    <div class="nav">
+        <ul>
+            <li><a href="/">首页</a></li>
+            <li><a href="/sale">销售收银</a></li>
+            <li><a href="/products">商品管理</a></li>
+            <li><a href="/members">会员管理</a></li>
+            <li><a href="/vipcards">储值卡</a></li>
+            <li><a href="/promotions" class="active">促销管理</a></li>
+            <li><a href="/reports">报表统计</a></li>
+        </ul>
+    </div>
+    
+    <div class="container">
+        <div class="card">
+            <div class="toolbar">
+                <button class="btn btn-success" onclick="showAddModal()">+ 添加促销</button>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>名称</th>
+                        <th>类型</th>
+                        <th>优惠值</th>
+                        <th>开始时间</th>
+                        <th>结束时间</th>
+                        <th>状态</th>
+                    </tr>
+                </thead>
+                <tbody id="promoTable"></tbody>
+            </table>
+        </div>
+        
+        <div class="card">
+            <h2>📖 促销类型说明</h2>
+            <table>
+                <tr><th>类型</th><th>说明</th></tr>
+                <tr><td><span class="type-badge type-0">单品折扣</span></td><td>指定商品按折扣销售，如 8.5 折</td></tr>
+                <tr><td><span class="type-badge type-1">满减促销</span></td><td>消费满一定金额减价，如 满100减10</td></tr>
+                <tr><td><span class="type-badge type-2">第N件优惠</span></td><td>如第二件半价</td></tr>
+            </table>
+        </div>
+    </div>
+    
+    <div class="modal" id="promoModal">
+        <div class="modal-content">
+            <h3>添加促销</h3>
+            <div class="form-group">
+                <label>促销名称</label>
+                <input type="text" id="promoName" placeholder="如 夏季饮料促销">
+            </div>
+            <div class="form-group">
+                <label>类型</label>
+                <select id="promoType">
+                    <option value="0">单品折扣</option>
+                    <option value="1">满减促销</option>
+                    <option value="2">第N件优惠</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>优惠值</label>
+                <input type="number" step="0.01" id="promoValue" placeholder="如 8.5 表示 8.5折，10 表示减10元">
+            </div>
+            <div class="form-group">
+                <label>开始时间</label>
+                <input type="date" id="promoStart">
+            </div>
+            <div class="form-group">
+                <label>结束时间</label>
+                <input type="date" id="promoEnd">
+            </div>
+            <div class="form-actions">
+                <button class="btn" onclick="closeModal()">取消</button>
+                <button class="btn btn-primary" onclick="savePromo()">保存</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function loadPromos() {
+            fetch('/api/promotions')
+                .then(r => r.json())
+                .then(data => renderTable(data));
+        }
+        
+        function getTypeName(type) {
+            const names = ['单品折扣', '满减促销', '第N件优惠'];
+            return names[type] || '未知';
+        }
+        
+        function formatDate(ts) {
+            if (!ts) return '-';
+            return new Date(ts * 1000).toLocaleDateString('zh-CN');
+        }
+        
+        function renderTable(data) {
+            const tbody = document.getElementById('promoTable');
+            if (!data.length) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">暂无促销</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.map(p => `
+                <tr>
+                    <td>${p.id}</td>
+                    <td>${p.name}</td>
+                    <td><span class="type-badge type-${p.type}">${getTypeName(p.type)}</span></td>
+                    <td>${p.value}</td>
+                    <td>${formatDate(p.start_time)}</td>
+                    <td>${formatDate(p.end_time)}</td>
+                    <td>${p.status === 1 ? '进行中' : '已结束'}</td>
+                </tr>
+            `).join('');
+        }
+        
+        function showAddModal() {
+            document.getElementById('promoName').value = '';
+            document.getElementById('promoType').value = '0';
+            document.getElementById('promoValue').value = '';
+            document.getElementById('promoStart').value = new Date().toISOString().split('T')[0];
+            document.getElementById('promoEnd').value = '';
+            document.getElementById('promoModal').classList.add('show');
+        }
+        
+        function closeModal() {
+            document.getElementById('promoModal').classList.remove('show');
+        }
+        
+        function savePromo() {
+            const start = new Date(document.getElementById('promoStart').value).getTime() / 1000;
+            const end = new Date(document.getElementById('promoEnd').value).getTime() / 1000;
+            
+            const data = {
+                name: document.getElementById('promoName').value,
+                type: parseInt(document.getElementById('promoType').value),
+                value: parseFloat(document.getElementById('promoValue').value),
+                start_time: start,
+                end_time: end
+            };
+            
+            fetch('/api/promotion', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(r => r.json())
+            .then(result => {
+                if (result.success) {
+                    closeModal();
+                    loadPromos();
+                }
+            });
+        }
+        
+        loadPromos();
+    </script>
+</body>
+</html>
