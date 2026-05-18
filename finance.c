@@ -189,24 +189,31 @@ DailySettlement* find_settlement_by_cashier_date(int cashier_id, time_t date) {
  * 按日期列出所有日结单
  */
 DailySettlement** list_settlements_by_date(time_t date, int *count) {
-    DailySettlement **list = NULL;
+    size_t cap = 8;
+    DailySettlement **list = (DailySettlement**)malloc(cap * sizeof(DailySettlement*));
+    if (!list) { *count = 0; return NULL; }
     *count = 0;
-    
+
     struct tm *tm_date = localtime(&date);
     int target_day = tm_date->tm_yday;
     int target_year = tm_date->tm_year;
-    
+
     DailySettlement *sett = g_settlements;
     while (sett) {
         struct tm *tm_sett = localtime(&sett->settlement_date);
         if (tm_sett->tm_yday == target_day && tm_sett->tm_year == target_year) {
-            list = (DailySettlement**)realloc(list, (*count + 1) * sizeof(DailySettlement*));
+            if ((size_t)*count >= cap) {
+                cap *= 2;
+                DailySettlement **tmp = (DailySettlement**)realloc(list, cap * sizeof(DailySettlement*));
+                if (!tmp) { free(list); *count = 0; return NULL; }
+                list = tmp;
+            }
             list[*count] = sett;
             (*count)++;
         }
         sett = sett->next;
     }
-    
+
     return list;
 }
 
@@ -214,19 +221,26 @@ DailySettlement** list_settlements_by_date(time_t date, int *count) {
  * 列出某收银员的日结单
  */
 DailySettlement** list_cashier_settlements(int cashier_id, int *count) {
-    DailySettlement **list = NULL;
+    size_t cap = 8;
+    DailySettlement **list = (DailySettlement**)malloc(cap * sizeof(DailySettlement*));
+    if (!list) { *count = 0; return NULL; }
     *count = 0;
-    
+
     DailySettlement *sett = g_settlements;
     while (sett) {
         if (sett->cashier_id == cashier_id) {
-            list = (DailySettlement**)realloc(list, (*count + 1) * sizeof(DailySettlement*));
+            if ((size_t)*count >= cap) {
+                cap *= 2;
+                DailySettlement **tmp = (DailySettlement**)realloc(list, cap * sizeof(DailySettlement*));
+                if (!tmp) { free(list); *count = 0; return NULL; }
+                list = tmp;
+            }
             list[*count] = sett;
             (*count)++;
         }
         sett = sett->next;
     }
-    
+
     return list;
 }
 
@@ -274,7 +288,7 @@ void print_settlement_detail(int settlement_id) {
     printf("\n========== 日结单 #%d ==========\n", sett->id);
     printf("收银员: %s (ID: %d)\n", sett->cashier_name, sett->cashier_id);
     printf("日期: %s\n", date_str);
-    printf("班次: %ld - %ld\n", (long)sett->shift_start, (long)sett->shift_end);
+    printf("班次: %lld - %lld\n", (long long)sett->shift_start, (long long)sett->shift_end);
     
     printf("\n【系统统计】\n");
     printf("订单数: %d\n", sett->total_orders);
@@ -329,27 +343,28 @@ int load_settlements(void) {
         if (strlen(line) == 0) continue;
         
         DailySettlement *sett = (DailySettlement*)malloc(sizeof(DailySettlement));
-        
-        sett->id = atoi(strtok(line, "|"));
-        sett->cashier_id = atoi(strtok(NULL, "|"));
-        strcpy(sett->cashier_name, strtok(NULL, "|"));
-        sett->settlement_date = (time_t)atoi(strtok(NULL, "|"));
-        sett->shift_start = (time_t)atoi(strtok(NULL, "|"));
-        sett->shift_end = (time_t)atoi(strtok(NULL, "|"));
-        sett->total_orders = atoi(strtok(NULL, "|"));
-        sett->system_cash = atof(strtok(NULL, "|"));
-        sett->system_online = atof(strtok(NULL, "|"));
-        sett->system_total = atof(strtok(NULL, "|"));
-        sett->actual_cash = atof(strtok(NULL, "|"));
-        sett->actual_online = atof(strtok(NULL, "|"));
-        sett->actual_total = atof(strtok(NULL, "|"));
-        sett->cash_diff = atof(strtok(NULL, "|"));
-        sett->online_diff = atof(strtok(NULL, "|"));
-        sett->total_diff = atof(strtok(NULL, "|"));
-        sett->status = atoi(strtok(NULL, "|"));
-        sett->created_at = (time_t)atoi(strtok(NULL, "|"));
-        sett->confirmed_at = (time_t)atoi(strtok(NULL, "|"));
-        strncpy(sett->remark, strtok(NULL, "|"), 511);
+        memset(sett, 0, sizeof(DailySettlement));
+        char *token;
+        token = strtok(line, "|"); sett->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); sett->cashier_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(sett->cashier_name, token, 49);
+        token = strtok(NULL, "|"); sett->settlement_date = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); sett->shift_start = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); sett->shift_end = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); sett->total_orders = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); sett->system_cash = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sett->system_online = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sett->system_total = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sett->actual_cash = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sett->actual_online = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sett->actual_total = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sett->cash_diff = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sett->online_diff = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sett->total_diff = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sett->status = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); sett->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); sett->confirmed_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(sett->remark, token, 511);
         
         sett->next = g_settlements;
         g_settlements = sett;
@@ -373,13 +388,13 @@ int save_settlement(DailySettlement *sett) {
     snprintf(filepath, sizeof(filepath), "%s/daily_settlement.txt", DATA_DIR);
     
     snprintf(content, sizeof(content),
-        "%d|%d|%s|%ld|%ld|%ld|%d|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%d|%ld|%ld|%s",
+        "%d|%d|%s|%lld|%lld|%lld|%d|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%d|%lld|%lld|%s",
         sett->id, sett->cashier_id, sett->cashier_name,
-        (long)sett->settlement_date, (long)sett->shift_start, (long)sett->shift_end,
+        (long long)sett->settlement_date, (long long)sett->shift_start, (long long)sett->shift_end,
         sett->total_orders, sett->system_cash, sett->system_online, sett->system_total,
         sett->actual_cash, sett->actual_online, sett->actual_total,
         sett->cash_diff, sett->online_diff, sett->total_diff,
-        sett->status, (long)sett->created_at, (long)sett->confirmed_at,
+        sett->status, (long long)sett->created_at, (long long)sett->confirmed_at,
         sett->remark);
     
     return atomic_append(filepath, content);
@@ -390,37 +405,48 @@ int save_settlement(DailySettlement *sett) {
  */
 int save_all_settlements(void) {
     char filepath[256];
-    char *buffer = NULL;
-    size_t bufsize = 0;
-    
-    snprintf(filepath, sizeof(filepath), "%s/daily_settlement.txt", DATA_DIR);
-    
-    bufsize = 65536;
-    buffer = (char*)malloc(bufsize);
+    size_t bufsize = 65536;
+    char *buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
+    char *pos = buffer;
+    size_t remaining = bufsize;
+
+    snprintf(filepath, sizeof(filepath), "%s/daily_settlement.txt", DATA_DIR);
+
     DailySettlement *sett = g_settlements;
     while (sett) {
-        char line[2048];
-        snprintf(line, sizeof(line),
-            "%d|%d|%s|%ld|%ld|%ld|%d|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%d|%ld|%ld|%s\n",
+        int written = snprintf(pos, remaining,
+            "%d|%d|%s|%lld|%lld|%lld|%d|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%d|%lld|%lld|%s\n",
             sett->id, sett->cashier_id, sett->cashier_name,
-            (long)sett->settlement_date, (long)sett->shift_start, (long)sett->shift_end,
+            (long long)sett->settlement_date, (long long)sett->shift_start, (long long)sett->shift_end,
             sett->total_orders, sett->system_cash, sett->system_online, sett->system_total,
             sett->actual_cash, sett->actual_online, sett->actual_total,
             sett->cash_diff, sett->online_diff, sett->total_diff,
-            sett->status, (long)sett->created_at, (long)sett->confirmed_at,
+            sett->status, (long long)sett->created_at, (long long)sett->confirmed_at,
             sett->remark);
-        
-        if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+
+        if (written >= (int)remaining) {
+            size_t offset = pos - buffer;
             bufsize *= 2;
             buffer = (char*)realloc(buffer, bufsize);
+            if (!buffer) return -1;
+            pos = buffer + offset;
+            remaining = bufsize - offset;
+            written = snprintf(pos, remaining,
+                "%d|%d|%s|%lld|%lld|%lld|%d|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%d|%lld|%lld|%s\n",
+                sett->id, sett->cashier_id, sett->cashier_name,
+                (long long)sett->settlement_date, (long long)sett->shift_start, (long long)sett->shift_end,
+                sett->total_orders, sett->system_cash, sett->system_online, sett->system_total,
+                sett->actual_cash, sett->actual_online, sett->actual_total,
+                sett->cash_diff, sett->online_diff, sett->total_diff,
+                sett->status, (long long)sett->created_at, (long long)sett->confirmed_at,
+                sett->remark);
         }
-        strcat(buffer, line);
+        pos += written;
+        remaining -= written;
         sett = sett->next;
     }
-    
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
     return result;

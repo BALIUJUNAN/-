@@ -269,15 +269,19 @@ void member_consume(Member *member, float amount) {
 Member** list_members(int *count) {
     Member **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     Member *m = g_members;
     while (m) {
-        list = (Member**)realloc(list, (*count + 1) * sizeof(Member*));
+        if (*count >= capacity) {
+            capacity = capacity == 0 ? 16 : capacity * 2;
+            list = (Member**)realloc(list, capacity * sizeof(Member*));
+        }
         list[*count] = m;
         (*count)++;
         m = m->next;
     }
-    
+
     return list;
 }
 
@@ -361,11 +365,11 @@ int load_members(void) {
         if (!(token = strtok(NULL, "|"))) { free(m); continue; }
         m->total_consume = atof(token);
         if (!(token = strtok(NULL, "|"))) { free(m); continue; }
-        m->created_at = (time_t)atoi(token);
+        m->created_at = (time_t)atoll(token);
         if (!(token = strtok(NULL, "|"))) { free(m); continue; }
-        m->updated_at = (time_t)atoi(token);
+        m->updated_at = (time_t)atoll(token);
         if (!(token = strtok(NULL, "|"))) { free(m); continue; }
-        m->last_consume_at = (time_t)atoi(token);
+        m->last_consume_at = (time_t)atoll(token);
         
         hash_insert(g_member_phone_hash, m->phone, m);
         m->next = g_members;
@@ -387,31 +391,40 @@ int load_members(void) {
 int save_members(void) {
     char filepath[256];
     char *buffer = NULL;
-    size_t bufsize = 0;
-    
+    size_t bufsize = 0, remaining = 0;
+
     snprintf(filepath, sizeof(filepath), "%s/member.txt", DATA_DIR);
-    
+
     bufsize = 65536;
     buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
+    char *pos = buffer;
+    remaining = bufsize;
+
     Member *m = g_members;
     while (m) {
-        char line[512];
-        snprintf(line, sizeof(line), "%d|%s|%s|%d|%d|%.2f|%ld|%ld|%ld\n",
+        int written = snprintf(pos, remaining, "%d|%s|%s|%d|%d|%.2f|%lld|%lld|%lld\n",
             m->id, m->phone, m->name, m->level, m->points,
-            m->total_consume, (long)m->created_at,
-            (long)m->updated_at, (long)m->last_consume_at);
-        
-        if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+            m->total_consume, (long long)m->created_at,
+            (long long)m->updated_at, (long long)m->last_consume_at);
+
+        if (written >= (int)remaining) {
+            size_t offset = pos - buffer;
             bufsize *= 2;
             buffer = (char*)realloc(buffer, bufsize);
+            if (!buffer) return -1;
+            pos = buffer + offset;
+            remaining = bufsize - offset;
+            written = snprintf(pos, remaining, "%d|%s|%s|%d|%d|%.2f|%lld|%lld|%lld\n",
+                m->id, m->phone, m->name, m->level, m->points,
+                m->total_consume, (long long)m->created_at,
+                (long long)m->updated_at, (long long)m->last_consume_at);
         }
-        strcat(buffer, line);
+        pos += written;
+        remaining -= written;
         m = m->next;
     }
-    
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
     return result;
@@ -423,13 +436,13 @@ int save_members(void) {
 int save_member_record(Member *member) {
     char filepath[256];
     char content[512];
-    
+
     snprintf(filepath, sizeof(filepath), "%s/member.txt", DATA_DIR);
-    snprintf(content, sizeof(content), "%d|%s|%s|%d|%d|%.2f|%ld|%ld|%ld",
+    snprintf(content, sizeof(content), "%d|%s|%s|%d|%d|%.2f|%lld|%lld|%lld",
         member->id, member->phone, member->name, member->level, member->points,
-        member->total_consume, (long)member->created_at,
-        (long)member->updated_at, (long)member->last_consume_at);
-    
+        member->total_consume, (long long)member->created_at,
+        (long long)member->updated_at, (long long)member->last_consume_at);
+
     return atomic_append(filepath, content);
 }
 
@@ -628,15 +641,19 @@ int delete_promotion(int id) {
 Promotion** list_promotions(int *count) {
     Promotion **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     Promotion *p = g_promotions;
     while (p) {
-        list = (Promotion**)realloc(list, (*count + 1) * sizeof(Promotion*));
+        if (*count >= capacity) {
+            capacity = capacity == 0 ? 16 : capacity * 2;
+            list = (Promotion**)realloc(list, capacity * sizeof(Promotion*));
+        }
         list[*count] = p;
         (*count)++;
         p = p->next;
     }
-    
+
     return list;
 }
 
@@ -646,17 +663,21 @@ Promotion** list_promotions(int *count) {
 Promotion** list_active_promotions(int *count) {
     Promotion **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     Promotion *p = g_promotions;
     while (p) {
         if (is_promotion_valid(p)) {
-            list = (Promotion**)realloc(list, (*count + 1) * sizeof(Promotion*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (Promotion**)realloc(list, capacity * sizeof(Promotion*));
+            }
             list[*count] = p;
             (*count)++;
         }
         p = p->next;
     }
-    
+
     return list;
 }
 
@@ -1002,11 +1023,11 @@ int load_promotions(void) {
         p->discount_rate = tokens[4] ? atof(tokens[4]) : 0;
         p->threshold = tokens[5] ? atof(tokens[5]) : 0;
         p->discount_amount = tokens[6] ? atof(tokens[6]) : 0;
-        p->start_time = tokens[7] ? (time_t)atoi(tokens[7]) : 0;
-        p->end_time = tokens[8] ? (time_t)atoi(tokens[8]) : 0;
+        p->start_time = tokens[7] ? (time_t)atoll(tokens[7]) : 0;
+        p->end_time = tokens[8] ? (time_t)atoll(tokens[8]) : 0;
         p->status = tokens[9] ? atoi(tokens[9]) : 0;
         p->priority = tokens[10] ? atoi(tokens[10]) : 0;
-        p->created_at = tokens[11] ? (time_t)atoi(tokens[11]) : 0;
+        p->created_at = tokens[11] ? (time_t)atoll(tokens[11]) : 0;
         if (field_count > 12) p->nth_item = atoi(tokens[12]);
         if (field_count > 13) p->nth_discount_rate = atof(tokens[13]);
         if (field_count > 14) p->buy_quantity = atoi(tokens[14]);
@@ -1040,11 +1061,11 @@ int save_promotion(Promotion *p) {
     snprintf(filepath, sizeof(filepath), "%s/promotion.txt", DATA_DIR);
     
     snprintf(content, sizeof(content),
-        "%d|%s|%d|%s|%.2f|%.2f|%.2f|%ld|%ld|%d|%d|%ld|%d|%.2f|%d|%d|%d|%.2f",
+        "%d|%s|%d|%s|%.2f|%.2f|%.2f|%lld|%lld|%d|%d|%lld|%d|%.2f|%d|%d|%d|%.2f",
         p->id, p->name, p->type, p->product_id,
         p->discount_rate, p->threshold, p->discount_amount,
-        (long)p->start_time, (long)p->end_time,
-        p->status, p->priority, (long)p->created_at,
+        (long long)p->start_time, (long long)p->end_time,
+        p->status, p->priority, (long long)p->created_at,
         p->nth_item, p->nth_discount_rate,
         p->buy_quantity, p->free_quantity,
         p->member_level, p->member_price);
@@ -1058,36 +1079,50 @@ int save_promotion(Promotion *p) {
 int save_all_promotions(void) {
     char filepath[256];
     char *buffer = NULL;
-    size_t bufsize = 0;
-    
+    size_t bufsize = 0, remaining = 0;
+
     snprintf(filepath, sizeof(filepath), "%s/promotion.txt", DATA_DIR);
-    
+
     bufsize = 65536;
     buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
+    char *pos = buffer;
+    remaining = bufsize;
+
     Promotion *p = g_promotions;
     while (p) {
-        char line[2048];
-        snprintf(line, sizeof(line),
-            "%d|%s|%d|%s|%.2f|%.2f|%.2f|%ld|%ld|%d|%d|%ld|%d|%.2f|%d|%d|%d|%.2f\n",
+        int written = snprintf(pos, remaining,
+            "%d|%s|%d|%s|%.2f|%.2f|%.2f|%lld|%lld|%d|%d|%lld|%d|%.2f|%d|%d|%d|%.2f\n",
             p->id, p->name, p->type, p->product_id,
             p->discount_rate, p->threshold, p->discount_amount,
-            (long)p->start_time, (long)p->end_time,
-            p->status, p->priority, (long)p->created_at,
+            (long long)p->start_time, (long long)p->end_time,
+            p->status, p->priority, (long long)p->created_at,
             p->nth_item, p->nth_discount_rate,
             p->buy_quantity, p->free_quantity,
             p->member_level, p->member_price);
-        
-        if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+
+        if (written >= (int)remaining) {
+            size_t offset = pos - buffer;
             bufsize *= 2;
             buffer = (char*)realloc(buffer, bufsize);
+            if (!buffer) return -1;
+            pos = buffer + offset;
+            remaining = bufsize - offset;
+            written = snprintf(pos, remaining,
+                "%d|%s|%d|%s|%.2f|%.2f|%.2f|%lld|%lld|%d|%d|%lld|%d|%.2f|%d|%d|%d|%.2f\n",
+                p->id, p->name, p->type, p->product_id,
+                p->discount_rate, p->threshold, p->discount_amount,
+                (long long)p->start_time, (long long)p->end_time,
+                p->status, p->priority, (long long)p->created_at,
+                p->nth_item, p->nth_discount_rate,
+                p->buy_quantity, p->free_quantity,
+                p->member_level, p->member_price);
         }
-        strcat(buffer, line);
+        pos += written;
+        remaining -= written;
         p = p->next;
     }
-    
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
     return result;
@@ -1205,15 +1240,19 @@ int delete_combo(int id) {
 ProductCombo** list_combos(int *count) {
     ProductCombo **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     ProductCombo *combo = g_combos;
     while (combo) {
-        list = (ProductCombo**)realloc(list, (*count + 1) * sizeof(ProductCombo*));
+        if (*count >= capacity) {
+            capacity = capacity == 0 ? 16 : capacity * 2;
+            list = (ProductCombo**)realloc(list, capacity * sizeof(ProductCombo*));
+        }
         list[*count] = combo;
         (*count)++;
         combo = combo->next;
     }
-    
+
     return list;
 }
 
@@ -1223,17 +1262,21 @@ ProductCombo** list_combos(int *count) {
 ProductCombo** list_active_combos(int *count) {
     ProductCombo **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     ProductCombo *combo = g_combos;
     while (combo) {
         if (combo->status == COMBO_ACTIVE) {
-            list = (ProductCombo**)realloc(list, (*count + 1) * sizeof(ProductCombo*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (ProductCombo**)realloc(list, capacity * sizeof(ProductCombo*));
+            }
             list[*count] = combo;
             (*count)++;
         }
         combo = combo->next;
     }
-    
+
     return list;
 }
 
@@ -1343,8 +1386,8 @@ int load_combos(void) {
         combo->price = atof(strtok(NULL, "|"));
         combo->cost = atof(strtok(NULL, "|"));
         combo->status = atoi(strtok(NULL, "|"));
-        combo->created_at = (time_t)atoi(strtok(NULL, "|"));
-        combo->updated_at = (time_t)atoi(strtok(NULL, "|"));
+        combo->created_at = (time_t)atoll(strtok(NULL, "|"));
+        combo->updated_at = (time_t)atoll(strtok(NULL, "|"));
         
         combo->next = g_combos;
         g_combos = combo;
@@ -1374,9 +1417,9 @@ int save_combo(ProductCombo *combo) {
     snprintf(filepath, sizeof(filepath), "%s/combo.txt", DATA_DIR);
     
     snprintf(content, sizeof(content),
-        "%d|%s|%s|%.2f|%.2f|%d|%ld|%ld",
+        "%d|%s|%s|%.2f|%.2f|%d|%lld|%lld",
         combo->id, combo->name, combo->barcode, combo->price, combo->cost,
-        combo->status, (long)combo->created_at, (long)combo->updated_at);
+        combo->status, (long long)combo->created_at, (long long)combo->updated_at);
     
     return atomic_append(filepath, content);
 }
@@ -1387,31 +1430,40 @@ int save_combo(ProductCombo *combo) {
 int save_all_combos(void) {
     char filepath[256];
     char *buffer = NULL;
-    size_t bufsize = 0;
-    
+    size_t bufsize = 0, remaining = 0;
+
     snprintf(filepath, sizeof(filepath), "%s/combo.txt", DATA_DIR);
-    
+
     bufsize = 65536;
     buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
+    char *pos = buffer;
+    remaining = bufsize;
+
     ProductCombo *combo = g_combos;
     while (combo) {
-        char line[1024];
-        snprintf(line, sizeof(line),
-            "%d|%s|%s|%.2f|%.2f|%d|%ld|%ld\n",
+        int written = snprintf(pos, remaining,
+            "%d|%s|%s|%.2f|%.2f|%d|%lld|%lld\n",
             combo->id, combo->name, combo->barcode, combo->price, combo->cost,
-            combo->status, (long)combo->created_at, (long)combo->updated_at);
-        
-        if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+            combo->status, (long long)combo->created_at, (long long)combo->updated_at);
+
+        if (written >= (int)remaining) {
+            size_t offset = pos - buffer;
             bufsize *= 2;
             buffer = (char*)realloc(buffer, bufsize);
+            if (!buffer) return -1;
+            pos = buffer + offset;
+            remaining = bufsize - offset;
+            written = snprintf(pos, remaining,
+                "%d|%s|%s|%.2f|%.2f|%d|%lld|%lld\n",
+                combo->id, combo->name, combo->barcode, combo->price, combo->cost,
+                combo->status, (long long)combo->created_at, (long long)combo->updated_at);
         }
-        strcat(buffer, line);
+        pos += written;
+        remaining -= written;
         combo = combo->next;
     }
-    
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
     return result;
@@ -1423,28 +1475,35 @@ int save_all_combos(void) {
 int load_all_combo_items(void) {
     char filepath[256];
     snprintf(filepath, sizeof(filepath), "%s/combo_item.txt", DATA_DIR);
-    
+
     FILE *fp = fopen(filepath, "r");
     if (!fp) return 0;
-    
+
     char line[MAX_LINE_LEN];
     while (fgets(line, sizeof(line), fp)) {
         trim(line);
         if (strlen(line) == 0) continue;
-        
-        int combo_id = atoi(strtok(line, "|"));
+
+        char *token = strtok(line, "|");
+        if (!token) continue;
+        int combo_id = atoi(token);
         ProductCombo *combo = find_combo_by_id(combo_id);
         if (combo) {
             ComboItem *new_item = (ComboItem*)malloc(sizeof(ComboItem));
-            strncpy(new_item->product_id, strtok(NULL, "|"), MAX_ID_LEN - 1);
-            strncpy(new_item->product_name, strtok(NULL, "|"), MAX_NAME_LEN - 1);
-            new_item->quantity = atoi(strtok(NULL, "|"));
-            new_item->ratio = atof(strtok(NULL, "|"));
+            memset(new_item, 0, sizeof(ComboItem));
+            token = strtok(NULL, "|");
+            strncpy(new_item->product_id, token ? token : "", MAX_ID_LEN - 1);
+            token = strtok(NULL, "|");
+            strncpy(new_item->product_name, token ? token : "", MAX_NAME_LEN - 1);
+            token = strtok(NULL, "|");
+            new_item->quantity = token ? atoi(token) : 0;
+            token = strtok(NULL, "|");
+            new_item->ratio = token ? atof(token) : 0;
             new_item->next = combo->items;
             combo->items = new_item;
         }
     }
-    
+
     fclose(fp);
     return 0;
 }
@@ -1571,17 +1630,21 @@ Batch* find_batch(const char *batch_no) {
 Batch** list_product_batches(const char *product_id, int *count) {
     Batch **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     Batch *b = g_batches;
     while (b) {
         if (strcmp(b->product_id, product_id) == 0 && b->quantity > 0) {
-            list = (Batch**)realloc(list, (*count + 1) * sizeof(Batch*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (Batch**)realloc(list, capacity * sizeof(Batch*));
+            }
             list[*count] = b;
             (*count)++;
         }
         b = b->next;
     }
-    
+
     return list;
 }
 
@@ -1659,32 +1722,36 @@ void check_expiring_batches(void) {
 Batch** list_expiring_batches(int days, int *count) {
     Batch **list = NULL;
     *count = 0;
+    int capacity = 0;
     time_t now = time(NULL);
     time_t warning_time = now + days * 24 * 3600;
-    
+
     printf("\n========== 临期批次预警 (≤%d天) ==========\n", days);
-    
+
     Batch *b = g_batches;
     while (b) {
         if (b->expiry_date > 0 && b->quantity > 0 && b->expiry_date <= warning_time) {
             int days_left = (b->expiry_date - now) / (24 * 3600);
-            
+
             if (days_left >= 0) {
                 printf("[预警] %s | %s | 剩余: %.2f | 剩余天数: %d\n",
                        b->batch_no, b->product_name, b->quantity, days_left);
-                list = (Batch**)realloc(list, (*count + 1) * sizeof(Batch*));
+                if (*count >= capacity) {
+                    capacity = capacity == 0 ? 16 : capacity * 2;
+                    list = (Batch**)realloc(list, capacity * sizeof(Batch*));
+                }
                 list[*count] = b;
                 (*count)++;
             }
         }
         b = b->next;
     }
-    
+
     if (*count == 0) {
         printf("无临期批次\n");
     }
     printf("=========================================\n\n");
-    
+
     return list;
 }
 
@@ -1704,18 +1771,31 @@ int load_batches(void) {
         if (strlen(line) == 0) continue;
         
         Batch *b = (Batch*)malloc(sizeof(Batch));
-        
-        strcpy(b->batch_no, strtok(line, "|"));
-        strcpy(b->product_id, strtok(NULL, "|"));
-        strcpy(b->product_name, strtok(NULL, "|"));
-        b->quantity = atof(strtok(NULL, "|"));
-        b->initial_quantity = atof(strtok(NULL, "|"));
-        b->price = atof(strtok(NULL, "|"));
-        b->production_date = (time_t)atoi(strtok(NULL, "|"));
-        b->expiry_date = (time_t)atoi(strtok(NULL, "|"));
-        b->received_date = (time_t)atoi(strtok(NULL, "|"));
-        b->supplier_id = atoi(strtok(NULL, "|"));
-        b->created_at = (time_t)atoi(strtok(NULL, "|"));
+        memset(b, 0, sizeof(Batch));
+
+        char *token;
+        token = strtok(line, "|");
+        strcpy(b->batch_no, token ? token : "");
+        token = strtok(NULL, "|");
+        strcpy(b->product_id, token ? token : "");
+        token = strtok(NULL, "|");
+        strcpy(b->product_name, token ? token : "");
+        token = strtok(NULL, "|");
+        b->quantity = token ? atof(token) : 0;
+        token = strtok(NULL, "|");
+        b->initial_quantity = token ? atof(token) : 0;
+        token = strtok(NULL, "|");
+        b->price = token ? atof(token) : 0;
+        token = strtok(NULL, "|");
+        b->production_date = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|");
+        b->expiry_date = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|");
+        b->received_date = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|");
+        b->supplier_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|");
+        b->created_at = token ? (time_t)atoll(token) : 0;
         
         Batch **prev = &g_batches;
         while (*prev && (*prev)->received_date <= b->received_date) {
@@ -1739,12 +1819,12 @@ int save_batch(Batch *batch) {
     snprintf(filepath, sizeof(filepath), "%s/batch.txt", DATA_DIR);
     
     snprintf(content, sizeof(content),
-        "%s|%s|%s|%.2f|%.2f|%.2f|%ld|%ld|%ld|%d|%ld",
+        "%s|%s|%s|%.2f|%.2f|%.2f|%lld|%lld|%lld|%d|%lld",
         batch->batch_no, batch->product_id, batch->product_name,
         batch->quantity, batch->initial_quantity, batch->price,
-        (long)batch->production_date, (long)batch->expiry_date,
-        (long)batch->received_date, batch->supplier_id,
-        (long)batch->created_at);
+        (long long)batch->production_date, (long long)batch->expiry_date,
+        (long long)batch->received_date, batch->supplier_id,
+        (long long)batch->created_at);
     
     return atomic_append(filepath, content);
 }
@@ -1755,34 +1835,46 @@ int save_batch(Batch *batch) {
 int save_all_batches(void) {
     char filepath[256];
     char *buffer = NULL;
-    size_t bufsize = 0;
-    
+    size_t bufsize = 0, remaining = 0;
+
     snprintf(filepath, sizeof(filepath), "%s/batch.txt", DATA_DIR);
-    
+
     bufsize = 65536;
     buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
+    char *pos = buffer;
+    remaining = bufsize;
+
     Batch *b = g_batches;
     while (b) {
-        char line[1024];
-        snprintf(line, sizeof(line),
-            "%s|%s|%s|%.2f|%.2f|%.2f|%ld|%ld|%ld|%d|%ld\n",
+        int written = snprintf(pos, remaining,
+            "%s|%s|%s|%.2f|%.2f|%.2f|%lld|%lld|%lld|%d|%lld\n",
             b->batch_no, b->product_id, b->product_name,
             b->quantity, b->initial_quantity, b->price,
-            (long)b->production_date, (long)b->expiry_date,
-            (long)b->received_date, b->supplier_id,
-            (long)b->created_at);
-        
-        if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+            (long long)b->production_date, (long long)b->expiry_date,
+            (long long)b->received_date, b->supplier_id,
+            (long long)b->created_at);
+
+        if (written >= (int)remaining) {
+            size_t offset = pos - buffer;
             bufsize *= 2;
             buffer = (char*)realloc(buffer, bufsize);
+            if (!buffer) return -1;
+            pos = buffer + offset;
+            remaining = bufsize - offset;
+            written = snprintf(pos, remaining,
+                "%s|%s|%s|%.2f|%.2f|%.2f|%lld|%lld|%lld|%d|%lld\n",
+                b->batch_no, b->product_id, b->product_name,
+                b->quantity, b->initial_quantity, b->price,
+                (long long)b->production_date, (long long)b->expiry_date,
+                (long long)b->received_date, b->supplier_id,
+                (long long)b->created_at);
         }
-        strcat(buffer, line);
+        pos += written;
+        remaining -= written;
         b = b->next;
     }
-    
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
     return result;
@@ -1975,15 +2067,19 @@ int set_vip_card_expired(const char *card_no, time_t expired_at) {
 VipCard** list_vip_cards(int *count) {
     VipCard **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     VipCard *card = g_vip_cards;
     while (card) {
-        list = (VipCard**)realloc(list, (*count + 1) * sizeof(VipCard*));
+        if (*count >= capacity) {
+            capacity = capacity == 0 ? 16 : capacity * 2;
+            list = (VipCard**)realloc(list, capacity * sizeof(VipCard*));
+        }
         list[*count] = card;
         (*count)++;
         card = card->next;
     }
-    
+
     return list;
 }
 
@@ -1993,17 +2089,21 @@ VipCard** list_vip_cards(int *count) {
 VipCard** list_member_vip_cards(int member_id, int *count) {
     VipCard **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     VipCard *card = g_vip_cards;
     while (card) {
         if (card->member_id == member_id) {
-            list = (VipCard**)realloc(list, (*count + 1) * sizeof(VipCard*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (VipCard**)realloc(list, capacity * sizeof(VipCard*));
+            }
             list[*count] = card;
             (*count)++;
         }
         card = card->next;
     }
-    
+
     return list;
 }
 
@@ -2184,17 +2284,21 @@ int refund_vip_card(const char *card_no, float amount, int sale_id, int operator
 VipCardTransaction** query_vip_card_transactions(const char *card_no, int *count) {
     VipCardTransaction **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     VipCardTransaction *trans = g_vip_card_transactions;
     while (trans) {
         if (strcmp(trans->card_no, card_no) == 0) {
-            list = (VipCardTransaction**)realloc(list, (*count + 1) * sizeof(VipCardTransaction*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (VipCardTransaction**)realloc(list, capacity * sizeof(VipCardTransaction*));
+            }
             list[*count] = trans;
             (*count)++;
         }
         trans = trans->next;
     }
-    
+
     return list;
 }
 
@@ -2337,9 +2441,9 @@ int load_vip_cards(void) {
         card->total_amount = tokens[3] ? atof(tokens[3]) : 0;
         card->card_type = tokens[4] ? atoi(tokens[4]) : 0;
         card->status = tokens[5] ? atoi(tokens[5]) : 1;
-        card->created_at = tokens[6] ? (time_t)atoi(tokens[6]) : 0;
-        card->updated_at = tokens[7] ? (time_t)atoi(tokens[7]) : 0;
-        card->expired_at = tokens[8] ? (time_t)atoi(tokens[8]) : 0;
+        card->created_at = tokens[6] ? (time_t)atoll(tokens[6]) : 0;
+        card->updated_at = tokens[7] ? (time_t)atoll(tokens[7]) : 0;
+        card->expired_at = tokens[8] ? (time_t)atoll(tokens[8]) : 0;
         strncpy(card->password_hash, tokens[9] ? tokens[9] : "", 64);
         strncpy(card->password_salt, tokens[10] ? tokens[10] : "", 32);
         
@@ -2357,16 +2461,16 @@ int load_vip_cards(void) {
 int save_vip_card(VipCard *card) {
     char filepath[256];
     char content[1024];
-    
+
     snprintf(filepath, sizeof(filepath), "%s/vipcard.txt", DATA_DIR);
-    
+
     snprintf(content, sizeof(content),
-        "%s|%d|%.2f|%.2f|%d|%d|%ld|%ld|%ld|%s|%s",
+        "%s|%d|%.2f|%.2f|%d|%d|%lld|%lld|%lld|%s|%s",
         card->card_no, card->member_id, card->balance, card->total_amount,
         card->card_type, card->status,
-        (long)card->created_at, (long)card->updated_at, (long)card->expired_at,
+        (long long)card->created_at, (long long)card->updated_at, (long long)card->expired_at,
         card->password_hash, card->password_salt);
-    
+
     return atomic_append(filepath, content);
 }
 
@@ -2376,33 +2480,44 @@ int save_vip_card(VipCard *card) {
 int save_all_vip_cards(void) {
     char filepath[256];
     char *buffer = NULL;
-    size_t bufsize = 0;
-    
+    size_t bufsize = 0, remaining = 0;
+
     snprintf(filepath, sizeof(filepath), "%s/vipcard.txt", DATA_DIR);
-    
+
     bufsize = 65536;
     buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
+    char *pos = buffer;
+    remaining = bufsize;
+
     VipCard *card = g_vip_cards;
     while (card) {
-        char line[1024];
-        snprintf(line, sizeof(line),
-            "%s|%d|%.2f|%.2f|%d|%d|%ld|%ld|%ld|%s|%s\n",
+        int written = snprintf(pos, remaining,
+            "%s|%d|%.2f|%.2f|%d|%d|%lld|%lld|%lld|%s|%s\n",
             card->card_no, card->member_id, card->balance, card->total_amount,
             card->card_type, card->status,
-            (long)card->created_at, (long)card->updated_at, (long)card->expired_at,
+            (long long)card->created_at, (long long)card->updated_at, (long long)card->expired_at,
             card->password_hash, card->password_salt);
-        
-        if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+
+        if (written >= (int)remaining) {
+            size_t offset = pos - buffer;
             bufsize *= 2;
             buffer = (char*)realloc(buffer, bufsize);
+            if (!buffer) return -1;
+            pos = buffer + offset;
+            remaining = bufsize - offset;
+            written = snprintf(pos, remaining,
+                "%s|%d|%.2f|%.2f|%d|%d|%lld|%lld|%lld|%s|%s\n",
+                card->card_no, card->member_id, card->balance, card->total_amount,
+                card->card_type, card->status,
+                (long long)card->created_at, (long long)card->updated_at, (long long)card->expired_at,
+                card->password_hash, card->password_salt);
         }
-        strcat(buffer, line);
+        pos += written;
+        remaining -= written;
         card = card->next;
     }
-    
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
     return result;
@@ -2414,39 +2529,50 @@ int save_all_vip_cards(void) {
 int load_vip_card_transactions(void) {
     char filepath[256];
     snprintf(filepath, sizeof(filepath), "%s/vipcard_trans.txt", DATA_DIR);
-    
+
     FILE *fp = fopen(filepath, "r");
     if (!fp) return 0;
-    
+
     char line[MAX_LINE_LEN];
     while (fgets(line, sizeof(line), fp)) {
         trim(line);
         if (strlen(line) == 0) continue;
-        
+
         VipCardTransaction *trans = (VipCardTransaction*)malloc(sizeof(VipCardTransaction));
         memset(trans, 0, sizeof(VipCardTransaction));
-        
-        char *token = strtok(line, "|");
-        trans->id = atoi(token ? token : "0");
-        strncpy(trans->card_no, strtok(NULL, "|"), 29);
-        trans->type = atoi(strtok(NULL, "|"));
-        trans->amount = atof(strtok(NULL, "|"));
-        trans->balance_before = atof(strtok(NULL, "|"));
-        trans->balance_after = atof(strtok(NULL, "|"));
-        trans->operator_id = atoi(strtok(NULL, "|"));
-        strncpy(trans->operator_name, strtok(NULL, "|"), 49);
-        trans->sale_id = atoi(strtok(NULL, "|"));
-        strncpy(trans->remark, strtok(NULL, "|"), 255);
-        trans->created_at = (time_t)atoi(strtok(NULL, "|"));
-        
+
+        char *token;
+        token = strtok(line, "|");
+        trans->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|");
+        strncpy(trans->card_no, token ? token : "", 29);
+        token = strtok(NULL, "|");
+        trans->type = token ? atoi(token) : 0;
+        token = strtok(NULL, "|");
+        trans->amount = token ? atof(token) : 0;
+        token = strtok(NULL, "|");
+        trans->balance_before = token ? atof(token) : 0;
+        token = strtok(NULL, "|");
+        trans->balance_after = token ? atof(token) : 0;
+        token = strtok(NULL, "|");
+        trans->operator_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|");
+        strncpy(trans->operator_name, token ? token : "", 49);
+        token = strtok(NULL, "|");
+        trans->sale_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|");
+        strncpy(trans->remark, token ? token : "", 255);
+        token = strtok(NULL, "|");
+        trans->created_at = token ? (time_t)atoll(token) : 0;
+
         trans->next = g_vip_card_transactions;
         g_vip_card_transactions = trans;
-        
+
         if (trans->id > g_auto_id_counter) {
             g_auto_id_counter = trans->id;
         }
     }
-    
+
     fclose(fp);
     return 0;
 }
@@ -2457,15 +2583,15 @@ int load_vip_card_transactions(void) {
 int save_vip_card_transaction(VipCardTransaction *trans) {
     char filepath[256];
     char content[1024];
-    
+
     snprintf(filepath, sizeof(filepath), "%s/vipcard_trans.txt", DATA_DIR);
-    
+
     snprintf(content, sizeof(content),
-        "%d|%s|%d|%.2f|%.2f|%.2f|%d|%s|%d|%s|%ld",
+        "%d|%s|%d|%.2f|%.2f|%.2f|%d|%s|%d|%s|%lld",
         trans->id, trans->card_no, trans->type, trans->amount,
         trans->balance_before, trans->balance_after,
         trans->operator_id, trans->operator_name,
-        trans->sale_id, trans->remark, (long)trans->created_at);
-    
+        trans->sale_id, trans->remark, (long long)trans->created_at);
+
     return atomic_append(filepath, content);
 }

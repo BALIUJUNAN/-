@@ -121,10 +121,10 @@ void generate_sales_report(time_t start, time_t end, const char *format) {
         sale.status = token ? atoi(token) : 0;
         
         token = strtok_r(NULL, "|", &saveptr);
-        sale.created_at = token ? (time_t)atol(token) : 0;
+        sale.created_at = token ? (time_t)atoll(token) : 0;
         
         token = strtok_r(NULL, "|", &saveptr);
-        sale.completed_at = token ? (time_t)atol(token) : 0;
+        sale.completed_at = token ? (time_t)atoll(token) : 0;
         
         if (sale.created_at < start || sale.created_at > end) continue;
         if (sale.status != SALE_COMPLETED) continue;
@@ -235,7 +235,7 @@ int export_sales_csv(time_t start, time_t end, const char *filename) {
             sale.status = token ? atoi(token) : 0;
             
             token = strtok_r(NULL, "|", &saveptr);
-            sale.created_at = token ? (time_t)atol(token) : 0;
+            sale.created_at = token ? (time_t)atoll(token) : 0;
             
             if (sale.created_at < start || sale.created_at > end) continue;
             
@@ -343,7 +343,7 @@ int export_sales_html(time_t start, time_t end, const char *filename) {
             sale.status = token ? atoi(token) : 0;
             
             token = strtok_r(NULL, "|", &saveptr);
-            sale.created_at = token ? (time_t)atol(token) : 0;
+            sale.created_at = token ? (time_t)atoll(token) : 0;
             
             if (sale.created_at < start || sale.created_at > end) continue;
             
@@ -612,7 +612,7 @@ void generate_profit_loss_report(time_t start, time_t end) {
             sale.status = token ? atoi(token) : 0;
             
             token = strtok_r(NULL, "|", &saveptr);
-            sale.created_at = token ? (time_t)atol(token) : 0;
+            sale.created_at = token ? (time_t)atoll(token) : 0;
             
             if (sale.created_at >= start && sale.created_at <= end &&
                 sale.status == SALE_COMPLETED) {
@@ -689,12 +689,12 @@ void handle_export(int choice) {
     switch (choice) {
         case 1:
             get_date_range(&range, 30);
-            snprintf(filename, sizeof(filename), "sales_report_%ld.csv", (long)time(NULL));
+            snprintf(filename, sizeof(filename), "sales_report_%lld.csv", (long long)time(NULL));
             export_sales_csv(range.start, range.end, filename);
             break;
         case 2:
             get_date_range(&range, 30);
-            snprintf(filename, sizeof(filename), "sales_report_%ld.html", (long)time(NULL));
+            snprintf(filename, sizeof(filename), "sales_report_%lld.html", (long long)time(NULL));
             export_sales_html(range.start, range.end, filename);
             break;
         case 3:

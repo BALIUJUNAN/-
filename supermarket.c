@@ -7,6 +7,10 @@
 #include <errno.h>
 #include <ctype.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#endif
+
 // ==================== 全局变量定义 ====================
 int g_auto_id_counter = 1;  // 从1开始自增，会根据已加载数据动态更新
 int g_sale_order_counter = 1;  // 销售订单专用计数器，从1开始，每次+1
@@ -59,10 +63,20 @@ static unsigned int simple_hash(const char *key, int size) {
 }
 
 /**
- * 插入哈希表
+ * 插入哈希表（检测重复key，已存在则更新data）
  */
 int hash_insert(HashTable *table, const char *key, void *data) {
     unsigned int index = simple_hash(key, table->size);
+
+    // 检查是否已存在相同key
+    HashNode *node = table->buckets[index];
+    while (node) {
+        if (strcmp(node->key, key) == 0) {
+            node->data = data;  // 更新已有节点
+            return 0;
+        }
+        node = node->next;
+    }
 
     HashNode *new_node = (HashNode*)malloc(sizeof(HashNode));
     if (!new_node) return -1;
@@ -374,30 +388,152 @@ char* generate_salt(char *salt) {
     return salt;
 }
 
+// ==================== SHA-256 实现 ====================
+
+#define ROTRIGHT(a,b) (((a) >> (b)) | ((a) << (32-(b))))
+#define CH(x,y,z) (((x) & (y)) ^ (~(x) & (z)))
+#define MAJ(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
+#define EP0(x) (ROTRIGHT(x,2) ^ ROTRIGHT(x,13) ^ ROTRIGHT(x,22))
+#define EP1(x) (ROTRIGHT(x,6) ^ ROTRIGHT(x,11) ^ ROTRIGHT(x,25))
+#define SIG0(x) (ROTRIGHT(x,7) ^ ROTRIGHT(x,18) ^ ((x) >> 3))
+#define SIG1(x) (ROTRIGHT(x,17) ^ ROTRIGHT(x,19) ^ ((x) >> 10))
+
+static const uint32_t k[64] = {
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+};
+
+static void sha256_transform(SHA256_CTX *ctx, const uint8_t data[]) {
+    uint32_t a, b, c, d, e, f, g, h, i, j, t1, t2, m[64];
+
+    for (i = 0, j = 0; i < 16; ++i, j += 4)
+        m[i] = ((uint32_t)data[j] << 24) | ((uint32_t)data[j+1] << 16) | ((uint32_t)data[j+2] << 8) | (uint32_t)data[j+3];
+    for ( ; i < 64; ++i)
+        m[i] = SIG1(m[i-2]) + m[i-7] + SIG0(m[i-15]) + m[i-16];
+
+    a = ctx->state[0];
+    b = ctx->state[1];
+    c = ctx->state[2];
+    d = ctx->state[3];
+    e = ctx->state[4];
+    f = ctx->state[5];
+    g = ctx->state[6];
+    h = ctx->state[7];
+
+    for (i = 0; i < 64; ++i) {
+        t1 = h + EP1(e) + CH(e,f,g) + k[i] + m[i];
+        t2 = EP0(a) + MAJ(a,b,c);
+        h = g;
+        g = f;
+        f = e;
+        e = d + t1;
+        d = c;
+        c = b;
+        b = a;
+        a = t1 + t2;
+    }
+
+    ctx->state[0] += a;
+    ctx->state[1] += b;
+    ctx->state[2] += c;
+    ctx->state[3] += d;
+    ctx->state[4] += e;
+    ctx->state[5] += f;
+    ctx->state[6] += g;
+    ctx->state[7] += h;
+}
+
+void sha256_init(SHA256_CTX *ctx) {
+    ctx->datalen = 0;
+    ctx->bitlen = 0;
+    ctx->state[0] = 0x6a09e667;
+    ctx->state[1] = 0xbb67ae85;
+    ctx->state[2] = 0x3c6ef372;
+    ctx->state[3] = 0xa54ff53a;
+    ctx->state[4] = 0x510e527f;
+    ctx->state[5] = 0x9b05688c;
+    ctx->state[6] = 0x1f83d9ab;
+    ctx->state[7] = 0x5be0cd19;
+}
+
+void sha256_update(SHA256_CTX *ctx, const uint8_t *data, size_t len) {
+    for (size_t i = 0; i < len; ++i) {
+        ctx->data[ctx->datalen] = data[i];
+        ctx->datalen++;
+        if (ctx->datalen == 64) {
+            sha256_transform(ctx, ctx->data);
+            ctx->bitlen += 512;
+            ctx->datalen = 0;
+        }
+    }
+}
+
+void sha256_final(SHA256_CTX *ctx, uint8_t hash[SHA256_BLOCK_SIZE]) {
+    uint32_t i = ctx->datalen;
+
+    if (ctx->datalen < 56) {
+        ctx->data[i++] = 0x80;
+        while (i < 56)
+            ctx->data[i++] = 0x00;
+    } else {
+        ctx->data[i++] = 0x80;
+        while (i < 64)
+            ctx->data[i++] = 0x00;
+        sha256_transform(ctx, ctx->data);
+        memset(ctx->data, 0, 56);
+    }
+
+    ctx->bitlen += ctx->datalen * 8;
+    ctx->data[63] = (uint8_t)(ctx->bitlen);
+    ctx->data[62] = (uint8_t)(ctx->bitlen >> 8);
+    ctx->data[61] = (uint8_t)(ctx->bitlen >> 16);
+    ctx->data[60] = (uint8_t)(ctx->bitlen >> 24);
+    ctx->data[59] = (uint8_t)(ctx->bitlen >> 32);
+    ctx->data[58] = (uint8_t)(ctx->bitlen >> 40);
+    ctx->data[57] = (uint8_t)(ctx->bitlen >> 48);
+    ctx->data[56] = (uint8_t)(ctx->bitlen >> 56);
+    sha256_transform(ctx, ctx->data);
+
+    for (i = 0; i < 4; ++i) {
+        hash[i]      = (ctx->state[0] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 4]  = (ctx->state[1] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 8]  = (ctx->state[2] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 12] = (ctx->state[3] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 16] = (ctx->state[4] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 20] = (ctx->state[5] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 24] = (ctx->state[6] >> (24 - i * 8)) & 0x000000ff;
+        hash[i + 28] = (ctx->state[7] >> (24 - i * 8)) & 0x000000ff;
+    }
+}
+
+void sha256_hash_to_hex(const uint8_t hash[SHA256_BLOCK_SIZE], char hex[65]) {
+    for (int i = 0; i < SHA256_BLOCK_SIZE; i++) {
+        sprintf(hex + i * 2, "%02x", hash[i]);
+    }
+    hex[64] = '\0';
+}
+
 /**
- * 简单密码哈希（实际应用中应使用 SHA-256）
- * 这里用简单的 salt + password 拼接后求和作为演示
+ * 密码哈希 - 使用 SHA-256 (salt + password)
  */
 char* hash_password(const char *password, const char *salt) {
-    static char hash[65];
-    unsigned int h = 0;
-    
-    // 组合 salt 和 password
-    char combined[128];
-    snprintf(combined, sizeof(combined), "%s%s", salt, password);
-    
-    // 简单哈希（实际应使用 SHA-256 库如 OpenSSL）
-    for (int i = 0; combined[i]; i++) {
-        h = h * 31 + combined[i];
-    }
-    
-    // 转换为 16 进制
-    for (int i = 0; i < 32; i++) {
-        sprintf(hash + i * 2, "%02x", (h >> (i % 4) * 8) & 0xFF);
-    }
-    hash[64] = '\0';
-    
-    return hash;
+    static char hash_hex[65];
+    uint8_t hash[SHA256_BLOCK_SIZE];
+    SHA256_CTX ctx;
+
+    sha256_init(&ctx);
+    sha256_update(&ctx, (const uint8_t *)salt, strlen(salt));
+    sha256_update(&ctx, (const uint8_t *)password, strlen(password));
+    sha256_final(&ctx, hash);
+    sha256_hash_to_hex(hash, hash_hex);
+
+    return hash_hex;
 }
 
 /**
@@ -593,16 +729,11 @@ int add_employee(Employee *emp) {
     
     Employee *new_emp = (Employee*)malloc(sizeof(Employee));
     *new_emp = *emp;
-    
+
     char key[32];
     sprintf(key, "%d", emp->id);
     hash_insert(g_employee_hash, key, new_emp);
-    
-    // 添加到链表头部
-    new_emp->updated_at = (time_t)((Employee*)0);  // 占位
-    new_emp->created_at = (time_t)NULL;  // 复用字段作链表指针
-    // 注意：简化版不维护员工链表
-    
+
     return emp->id;
 }
 
@@ -648,36 +779,37 @@ int delete_employee(int id) {
 int load_employees(void) {
     char filepath[256];
     snprintf(filepath, sizeof(filepath), "%s/employee.txt", DATA_DIR);
-    
+
     FILE *fp = fopen(filepath, "r");
     if (!fp) return 0;  // 文件不存在不算错误
-    
+
     char line[MAX_LINE_LEN];
     while (fgets(line, sizeof(line), fp)) {
         trim(line);
         if (strlen(line) == 0) continue;
-        
+
         Employee *emp = (Employee*)malloc(sizeof(Employee));
-        char *token = strtok(line, "|");
-        emp->id = atoi(token);
-        strncpy(emp->name, strtok(NULL, "|"), MAX_NAME_LEN - 1);
-        strncpy(emp->role, strtok(NULL, "|"), 19);
-        strncpy(emp->password_hash, strtok(NULL, "|"), 64);
-        strncpy(emp->salt, strtok(NULL, "|"), 32);
-        emp->status = atoi(strtok(NULL, "|"));
-        emp->created_at = (time_t)atoi(strtok(NULL, "|"));
-        emp->updated_at = (time_t)atoi(strtok(NULL, "|"));
-        
+        memset(emp, 0, sizeof(Employee));
+        char *token;
+        token = strtok(line, "|"); emp->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(emp->name, token, MAX_NAME_LEN - 1);
+        token = strtok(NULL, "|"); if (token) strncpy(emp->role, token, 19);
+        token = strtok(NULL, "|"); if (token) strncpy(emp->password_hash, token, 64);
+        token = strtok(NULL, "|"); if (token) strncpy(emp->salt, token, 32);
+        token = strtok(NULL, "|"); emp->status = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); emp->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); emp->updated_at = token ? (time_t)atoll(token) : 0;
+
         char key[32];
         sprintf(key, "%d", emp->id);
         hash_insert(g_employee_hash, key, emp);
-        
+
         // 更新自增ID
         if (emp->id > g_auto_id_counter) {
             g_auto_id_counter = emp->id;
         }
     }
-    
+
     fclose(fp);
     return 0;
 }
@@ -688,42 +820,41 @@ int load_employees(void) {
  */
 int save_employees(void) {
     char filepath[256];
-    char *buffer = NULL;
-    size_t bufsize = 0;
-    
-    snprintf(filepath, sizeof(filepath), "%s/employee.txt", DATA_DIR);
-    
-    // 分配初始缓冲区
-    bufsize = 65536;
-    buffer = (char*)malloc(bufsize);
+    size_t bufsize = 65536;
+    char *buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
-    // 遍历哈希表构建内容
+    char *pos = buffer;
+    size_t remaining = bufsize;
+
+    snprintf(filepath, sizeof(filepath), "%s/employee.txt", DATA_DIR);
+
     for (int i = 0; i < g_employee_hash->size; i++) {
         HashNode *node = g_employee_hash->buckets[i];
         while (node) {
             Employee *emp = (Employee*)node->data;
-            char line[512];
-            snprintf(line, sizeof(line), "%d|%s|%s|%s|%s|%d|%ld|%ld\n",
+            int written = snprintf(pos, remaining, "%d|%s|%s|%s|%s|%d|%lld|%lld\n",
                 emp->id, emp->name, emp->role, emp->password_hash,
-                emp->salt, emp->status, (long)emp->created_at, (long)emp->updated_at);
-            
-            // 扩展缓冲区如果需要
-            if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+                emp->salt, emp->status, (long long)emp->created_at, (long long)emp->updated_at);
+
+            if (written >= (int)remaining) {
+                size_t offset = pos - buffer;
                 bufsize *= 2;
                 buffer = (char*)realloc(buffer, bufsize);
                 if (!buffer) return -1;
+                pos = buffer + offset;
+                remaining = bufsize - offset;
+                written = snprintf(pos, remaining, "%d|%s|%s|%s|%s|%d|%lld|%lld\n",
+                    emp->id, emp->name, emp->role, emp->password_hash,
+                    emp->salt, emp->status, (long long)emp->created_at, (long long)emp->updated_at);
             }
-            strcat(buffer, line);
+            pos += written;
+            remaining -= written;
             node = node->next;
         }
     }
-    
-    // 原子写入
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
-    
     return result;
 }
 
@@ -732,21 +863,25 @@ int save_employees(void) {
  */
 Employee** list_employees(int *count) {
     Employee **list = NULL;
+    int capacity = 0;
     *count = 0;
-    
+
     for (int i = 0; i < g_employee_hash->size; i++) {
         HashNode *node = g_employee_hash->buckets[i];
         while (node) {
             Employee *emp = (Employee*)node->data;
             if (emp->status == STATUS_ACTIVE) {
-                list = (Employee**)realloc(list, (*count + 1) * sizeof(Employee*));
+                if (*count >= capacity) {
+                    capacity = capacity == 0 ? 16 : capacity * 2;
+                    list = (Employee**)realloc(list, capacity * sizeof(Employee*));
+                }
                 list[*count] = emp;
                 (*count)++;
             }
             node = node->next;
         }
     }
-    
+
     return list;
 }
 
@@ -818,37 +953,37 @@ int delete_product(const char *id) {
 int load_products(void) {
     char filepath[256];
     snprintf(filepath, sizeof(filepath), "%s/product.txt", DATA_DIR);
-    
+
     FILE *fp = fopen(filepath, "r");
     if (!fp) return 0;
-    
+
     char line[MAX_LINE_LEN];
     while (fgets(line, sizeof(line), fp)) {
         trim(line);
         if (strlen(line) == 0) continue;
-        
+
         Product *prod = (Product*)malloc(sizeof(Product));
-        char *p = line;
-        
-        strncpy(prod->id, strtok(p, "|"), MAX_ID_LEN - 1);
-        strncpy(prod->name, strtok(NULL, "|"), MAX_NAME_LEN - 1);
-        strncpy(prod->barcode, strtok(NULL, "|"), 29);
-        prod->price = atof(strtok(NULL, "|"));
-        prod->cost = atof(strtok(NULL, "|"));
-        prod->stock = atoi(strtok(NULL, "|"));
-        prod->min_stock = atoi(strtok(NULL, "|"));
-        strncpy(prod->category_id, strtok(NULL, "|"), 19);
-        strncpy(prod->supplier_id, strtok(NULL, "|"), 19);
-        prod->status = atoi(strtok(NULL, "|"));
-        prod->created_at = (time_t)atoi(strtok(NULL, "|"));
-        prod->updated_at = (time_t)atoi(strtok(NULL, "|"));
-        
+        memset(prod, 0, sizeof(Product));
+        char *token;
+        token = strtok(line, "|"); if (token) strncpy(prod->id, token, MAX_ID_LEN - 1);
+        token = strtok(NULL, "|"); if (token) strncpy(prod->name, token, MAX_NAME_LEN - 1);
+        token = strtok(NULL, "|"); if (token) strncpy(prod->barcode, token, 29);
+        token = strtok(NULL, "|"); prod->price = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); prod->cost = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); prod->stock = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); prod->min_stock = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(prod->category_id, token, 19);
+        token = strtok(NULL, "|"); if (token) strncpy(prod->supplier_id, token, 19);
+        token = strtok(NULL, "|"); prod->status = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); prod->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); prod->updated_at = token ? (time_t)atoll(token) : 0;
+
         hash_insert(g_product_hash, prod->id, prod);
         if (strlen(prod->barcode) > 0) {
             hash_insert(g_barcode_hash, prod->barcode, prod);
         }
     }
-    
+
     fclose(fp);
     return 0;
 }
@@ -858,38 +993,41 @@ int load_products(void) {
  */
 int save_products(void) {
     char filepath[256];
-    char *buffer = NULL;
-    size_t bufsize = 0;
-    
-    snprintf(filepath, sizeof(filepath), "%s/product.txt", DATA_DIR);
-    
-    // 分配初始缓冲区
-    bufsize = 65536;
-    buffer = (char*)malloc(bufsize);
+    size_t bufsize = 65536;
+    char *buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
-    // 遍历哈希表构建内容
+    char *pos = buffer;
+    size_t remaining = bufsize;
+
+    snprintf(filepath, sizeof(filepath), "%s/product.txt", DATA_DIR);
+
     for (int i = 0; i < g_product_hash->size; i++) {
         HashNode *node = g_product_hash->buckets[i];
         while (node) {
             Product *prod = (Product*)node->data;
-            char line[512];
-            snprintf(line, sizeof(line), "%s|%s|%s|%.2f|%.2f|%d|%d|%s|%s|%d|%ld|%ld\n",
+            int written = snprintf(pos, remaining, "%s|%s|%s|%.2f|%.2f|%d|%d|%s|%s|%d|%lld|%lld\n",
                 prod->id, prod->name, prod->barcode, prod->price, prod->cost,
                 prod->stock, prod->min_stock, prod->category_id, prod->supplier_id,
-                prod->status, (long)prod->created_at, (long)prod->updated_at);
-            
-            if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+                prod->status, (long long)prod->created_at, (long long)prod->updated_at);
+
+            if (written >= (int)remaining) {
+                size_t offset = pos - buffer;
                 bufsize *= 2;
                 buffer = (char*)realloc(buffer, bufsize);
                 if (!buffer) return -1;
+                pos = buffer + offset;
+                remaining = bufsize - offset;
+                written = snprintf(pos, remaining, "%s|%s|%s|%.2f|%.2f|%d|%d|%s|%s|%d|%lld|%lld\n",
+                    prod->id, prod->name, prod->barcode, prod->price, prod->cost,
+                    prod->stock, prod->min_stock, prod->category_id, prod->supplier_id,
+                    prod->status, (long long)prod->created_at, (long long)prod->updated_at);
             }
-            strcat(buffer, line);
+            pos += written;
+            remaining -= written;
             node = node->next;
         }
     }
-    
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
     return result;
@@ -929,32 +1067,34 @@ Supplier* find_supplier_by_id(int id) {
 int load_suppliers(void) {
     char filepath[256];
     snprintf(filepath, sizeof(filepath), "%s/supplier.txt", DATA_DIR);
-    
+
     FILE *fp = fopen(filepath, "r");
     if (!fp) return 0;
-    
+
     char line[MAX_LINE_LEN];
     while (fgets(line, sizeof(line), fp)) {
         trim(line);
         if (strlen(line) == 0) continue;
-        
+
         Supplier *sup = (Supplier*)malloc(sizeof(Supplier));
-        strcpy(sup->name, strtok(line, "|"));
-        strcpy(sup->contact, strtok(NULL, "|"));
-        strcpy(sup->phone, strtok(NULL, "|"));
-        strcpy(sup->address, strtok(NULL, "|"));
-        sup->id = atoi(strtok(NULL, "|"));
-        sup->status = atoi(strtok(NULL, "|"));
-        
+        memset(sup, 0, sizeof(Supplier));
+        char *token;
+        token = strtok(line, "|"); if (token) strncpy(sup->name, token, MAX_NAME_LEN-1);
+        token = strtok(NULL, "|"); if (token) strncpy(sup->contact, token, 49);
+        token = strtok(NULL, "|"); if (token) strncpy(sup->phone, token, 19);
+        token = strtok(NULL, "|"); if (token) strncpy(sup->address, token, 255);
+        token = strtok(NULL, "|"); sup->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); sup->status = token ? atoi(token) : 0;
+
         char key[32];
         sprintf(key, "%d", sup->id);
         hash_insert(g_supplier_hash, key, sup);
-        
+
         if (sup->id > g_auto_id_counter) {
             g_auto_id_counter = sup->id;
         }
     }
-    
+
     fclose(fp);
     return 0;
 }
@@ -964,33 +1104,37 @@ int load_suppliers(void) {
  */
 int save_suppliers(void) {
     char filepath[256];
-    char *buffer = NULL;
-    size_t bufsize = 0;
-    
-    snprintf(filepath, sizeof(filepath), "%s/supplier.txt", DATA_DIR);
-    
-    bufsize = 65536;
-    buffer = (char*)malloc(bufsize);
+    size_t bufsize = 65536;
+    char *buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
+    char *pos = buffer;
+    size_t remaining = bufsize;
+
+    snprintf(filepath, sizeof(filepath), "%s/supplier.txt", DATA_DIR);
+
     for (int i = 0; i < g_supplier_hash->size; i++) {
         HashNode *node = g_supplier_hash->buckets[i];
         while (node) {
             Supplier *sup = (Supplier*)node->data;
-            char line[512];
-            snprintf(line, sizeof(line), "%s|%s|%s|%s|%d|%d\n",
+            int written = snprintf(pos, remaining, "%s|%s|%s|%s|%d|%d\n",
                 sup->name, sup->contact, sup->phone, sup->address, sup->id, sup->status);
-            
-            if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+
+            if (written >= (int)remaining) {
+                size_t offset = pos - buffer;
                 bufsize *= 2;
                 buffer = (char*)realloc(buffer, bufsize);
+                if (!buffer) return -1;
+                pos = buffer + offset;
+                remaining = bufsize - offset;
+                written = snprintf(pos, remaining, "%s|%s|%s|%s|%d|%d\n",
+                    sup->name, sup->contact, sup->phone, sup->address, sup->id, sup->status);
             }
-            strcat(buffer, line);
+            pos += written;
+            remaining -= written;
             node = node->next;
         }
     }
-    
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
     return result;

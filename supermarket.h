@@ -244,7 +244,7 @@ typedef struct SaleItem {
     float discount;          // 单品折扣
     int is_combo;            // 是否为套装: 0-普通商品, 1-套装
     int combo_id;            // 套装ID（如果是套装）
-    void *next;              // 通用指针
+    struct SaleItem *next;   // 链表指针
 } SaleItem;
 
 // ==================== 库存记录 ====================

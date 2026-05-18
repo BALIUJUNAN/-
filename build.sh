@@ -15,7 +15,7 @@ OUTPUT="supermarket"
 # 编译
 echo ""
 echo "正在编译..."
-gcc $SOURCES -o $OUTPUT -O2 -Wall -Wextra -flto -std=c99
+gcc $SOURCES -o $OUTPUT -O2 -Wall -Wextra -Wpedantic -flto -std=c99
 
 if [ $? -eq 0 ]; then
     echo ""

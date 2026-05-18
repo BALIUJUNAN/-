@@ -100,18 +100,22 @@ int batch_create_schedule(int employee_id, int year, int week, char shifts[7][4]
  */
 Schedule** list_employee_schedules(int employee_id, int *count) {
     Schedule **result = NULL;
+    int capacity = 0;
     *count = 0;
-    
+
     Schedule *sch = g_schedules;
     while (sch) {
         if (sch->employee_id == employee_id) {
-            result = (Schedule**)realloc(result, (*count + 1) * sizeof(Schedule*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                result = (Schedule**)realloc(result, capacity * sizeof(Schedule*));
+            }
             result[*count] = sch;
             (*count)++;
         }
         sch = sch->next;
     }
-    
+
     return result;
 }
 
@@ -120,18 +124,22 @@ Schedule** list_employee_schedules(int employee_id, int *count) {
  */
 Schedule** list_week_schedules(int year, int week, int *count) {
     Schedule **result = NULL;
+    int capacity = 0;
     *count = 0;
-    
+
     Schedule *sch = g_schedules;
     while (sch) {
         if (sch->year == year && sch->week == week) {
-            result = (Schedule**)realloc(result, (*count + 1) * sizeof(Schedule*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                result = (Schedule**)realloc(result, capacity * sizeof(Schedule*));
+            }
             result[*count] = sch;
             (*count)++;
         }
         sch = sch->next;
     }
-    
+
     return result;
 }
 
@@ -212,11 +220,11 @@ int save_schedule(Schedule *sch) {
     
     snprintf(filepath, sizeof(filepath), "%s/schedule.txt", DATA_DIR);
     
-    snprintf(content, sizeof(content), "%d|%d|%d|%d|%s|%s|%s|%s|%s|%s|%s|%ld",
+    snprintf(content, sizeof(content), "%d|%d|%d|%d|%s|%s|%s|%s|%s|%s|%s|%lld",
         sch->id, sch->employee_id, sch->year, sch->week,
         sch->shifts[0], sch->shifts[1], sch->shifts[2],
         sch->shifts[3], sch->shifts[4], sch->shifts[5],
-        sch->shifts[6], (long)sch->created_at);
+        sch->shifts[6], (long long)sch->created_at);
     
     return atomic_append(filepath, content);
 }
@@ -237,15 +245,18 @@ int load_schedules(void) {
         if (strlen(line) == 0) continue;
         
         Schedule *sch = (Schedule*)malloc(sizeof(Schedule));
-        sch->id = atoi(strtok(line, "|"));
-        sch->employee_id = atoi(strtok(NULL, "|"));
-        sch->year = atoi(strtok(NULL, "|"));
-        sch->week = atoi(strtok(NULL, "|"));
-        
+        memset(sch, 0, sizeof(Schedule));
+        char *token;
+        token = strtok(line, "|"); sch->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); sch->employee_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); sch->year = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); sch->week = token ? atoi(token) : 0;
+
         for (int i = 0; i < 7; i++) {
-            strncpy(sch->shifts[i], strtok(NULL, "|"), 3);
+            token = strtok(NULL, "|");
+            if (token) strncpy(sch->shifts[i], token, 3);
         }
-        sch->created_at = (time_t)atoi(strtok(NULL, "|"));
+        token = strtok(NULL, "|"); sch->created_at = token ? (time_t)atoll(token) : 0;
         
         sch->next = g_schedules;
         g_schedules = sch;

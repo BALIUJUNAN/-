@@ -580,8 +580,8 @@ float get_today_sales(void) {
             for (int i = 0; i < 5; i++) token = strtok(NULL, "|");
             float final_amount = atof(token ? token : "0");
             token = strtok(NULL, "|"); int status = atoi(token ? token : "0");
-            token = strtok(NULL, "|"); time_t created_at = (time_t)atoi(token ? token : "0");
-            
+            token = strtok(NULL, "|"); time_t created_at = token ? (time_t)atoll(token) : 0;
+
             if (status == SALE_COMPLETED && created_at >= today_start) {
                 total += final_amount;
             }
@@ -617,8 +617,8 @@ int get_today_orders(void) {
             char *token = strtok(line, "|");
             for (int i = 0; i < 6; i++) token = strtok(NULL, "|");
             int status = atoi(token ? token : "0");
-            token = strtok(NULL, "|"); time_t created_at = (time_t)atoi(token ? token : "0");
-            
+            token = strtok(NULL, "|"); time_t created_at = token ? (time_t)atoll(token) : 0;
+
             if (status == SALE_COMPLETED && created_at >= today_start) {
                 count++;
             }
@@ -730,7 +730,7 @@ void get_top_selling_products(int top_n) {
                         for (int i = 0; i < 6; i++) stok = strtok(NULL, "|");
                         int status = atoi(stok);
                         stok = strtok(NULL, "|");
-                        time_t created = (time_t)atoi(stok);
+                        time_t created = stok ? (time_t)atoll(stok) : 0;
                         if (status == SALE_COMPLETED && created >= today_start) {
                             int found = -1;
                             for (int j = 0; j < count; j++) {

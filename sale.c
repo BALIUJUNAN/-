@@ -48,18 +48,22 @@ int add_sale_item(int sale_id, SaleItem *item) {
  */
 SaleItem* get_sale_items(int sale_id, int *count) {
     SaleItem *result = NULL;
+    int capacity = 0;
     *count = 0;
-    
+
     SaleItem *item = g_sale_items;
     while (item) {
         if (item->sale_id == sale_id) {
-            result = (SaleItem*)realloc(result, (*count + 1) * sizeof(SaleItem));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                result = (SaleItem*)realloc(result, capacity * sizeof(SaleItem));
+            }
             result[*count] = *item;
             (*count)++;
         }
         item = (SaleItem*)item->next;
     }
-    
+
     return result;
 }
 
@@ -305,18 +309,18 @@ int load_pending_sales(void) {
         memset(sale, 0, sizeof(Sale));
         
         char *token;
-        token = strtok(line, "|"); sale->id = atoi(token);
-        token = strtok(NULL, "|"); sale->cashier_id = atoi(token);
-        token = strtok(NULL, "|"); sale->member_id = atoi(token);
-        token = strtok(NULL, "|"); sale->total_amount = atof(token);
-        token = strtok(NULL, "|"); sale->discount = atof(token);
-        token = strtok(NULL, "|"); sale->final_amount = atof(token);
-        token = strtok(NULL, "|"); sale->cash_received = atof(token);
-        token = strtok(NULL, "|"); sale->points_used = atoi(token);
-        token = strtok(NULL, "|"); strncpy(sale->payment_method, token, 19);
-        token = strtok(NULL, "|"); sale->status = atoi(token);
-        token = strtok(NULL, "|"); sale->created_at = (time_t)atoi(token);
-        token = strtok(NULL, "|"); sale->completed_at = (time_t)atoi(token);
+        token = strtok(line, "|"); sale->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); sale->cashier_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); sale->member_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); sale->total_amount = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sale->discount = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sale->final_amount = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sale->cash_received = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); sale->points_used = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(sale->payment_method, token, 19);
+        token = strtok(NULL, "|"); sale->status = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); sale->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); sale->completed_at = token ? (time_t)atoll(token) : 0;
         
         sale->next = g_pending_sales;
         g_pending_sales = sale;
@@ -340,11 +344,11 @@ int save_pending_sale(Sale *sale) {
     
     snprintf(filepath, sizeof(filepath), "%s/pending_sales.txt", DATA_DIR);
     
-    snprintf(content, sizeof(content), "%d|%d|%d|%.2f|%.2f|%.2f|%.2f|%d|%s|%d|%ld|%ld",
+    snprintf(content, sizeof(content), "%d|%d|%d|%.2f|%.2f|%.2f|%.2f|%d|%s|%d|%lld|%lld",
         sale->id, sale->cashier_id, sale->member_id, sale->total_amount,
         sale->discount, sale->final_amount, sale->cash_received, sale->points_used,
         sale->payment_method, sale->status,
-        (long)sale->created_at, (long)sale->completed_at);
+        (long long)sale->created_at, (long long)sale->completed_at);
     
     return atomic_append(filepath, content);
 }
@@ -358,10 +362,10 @@ int save_sale_record(Sale *sale) {
     
     snprintf(filepath, sizeof(filepath), "%s/sales.txt", DATA_DIR);
     
-    snprintf(content, sizeof(content), "%d|%d|%.2f|%.2f|%.2f|%s|%d|%ld|%ld",
+    snprintf(content, sizeof(content), "%d|%d|%.2f|%.2f|%.2f|%s|%d|%lld|%lld",
         sale->id, sale->cashier_id, sale->total_amount,
         sale->discount, sale->final_amount, sale->payment_method,
-        sale->status, (long)sale->created_at, (long)sale->completed_at);
+        sale->status, (long long)sale->created_at, (long long)sale->completed_at);
     
     return atomic_append(filepath, content);
 }
@@ -497,10 +501,10 @@ int save_stock_log(StockLog *log) {
     
     snprintf(filepath, sizeof(filepath), "%s/stock_log.txt", DATA_DIR);
     
-    snprintf(content, sizeof(content), "%d|%s|%s|%.2f|%.2f|%.2f|%d|%s|%ld",
+    snprintf(content, sizeof(content), "%d|%s|%s|%.2f|%.2f|%.2f|%d|%s|%lld",
         log->id, log->product_id, log->type, log->quantity,
         log->before_stock, log->after_stock, log->operator_id,
-        log->remark, (long)log->created_at);
+        log->remark, (long long)log->created_at);
     
     return atomic_append(filepath, content);
 }
@@ -521,15 +525,17 @@ int load_stock_logs(void) {
         if (strlen(line) == 0) continue;
         
         StockLog *log = (StockLog*)malloc(sizeof(StockLog));
-        strcpy(log->product_id, strtok(line, "|"));
-        strcpy(log->type, strtok(NULL, "|"));
-        log->quantity = atof(strtok(NULL, "|"));
-        log->before_stock = atof(strtok(NULL, "|"));
-        log->after_stock = atof(strtok(NULL, "|"));
-        log->id = atoi(strtok(NULL, "|"));
-        log->operator_id = atoi(strtok(NULL, "|"));
-        strcpy(log->remark, strtok(NULL, "|"));
-        log->created_at = (time_t)atoi(strtok(NULL, "|"));
+        memset(log, 0, sizeof(StockLog));
+        char *token;
+        token = strtok(line, "|"); if (token) strncpy(log->product_id, token, MAX_ID_LEN-1);
+        token = strtok(NULL, "|"); if (token) strncpy(log->type, token, 19);
+        token = strtok(NULL, "|"); log->quantity = token ? atof(token) : 0;
+        token = strtok(NULL, "|"); log->before_stock = token ? atof(token) : 0;
+        token = strtok(NULL, "|"); log->after_stock = token ? atof(token) : 0;
+        token = strtok(NULL, "|"); log->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); log->operator_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(log->remark, token, 255);
+        token = strtok(NULL, "|"); log->created_at = token ? (time_t)atoll(token) : 0;
         
         log->next = g_stock_logs;
         g_stock_logs = log;
@@ -544,8 +550,9 @@ int load_stock_logs(void) {
  */
 StockLog* query_stock_logs(const char *product_id, time_t start, time_t end, int *count) {
     StockLog *result = NULL;
+    int capacity = 0;
     *count = 0;
-    
+
     StockLog *log = g_stock_logs;
     while (log) {
         if (product_id && strcmp(log->product_id, product_id) != 0) {
@@ -553,13 +560,16 @@ StockLog* query_stock_logs(const char *product_id, time_t start, time_t end, int
             continue;
         }
         if (log->created_at >= start && log->created_at <= end) {
-            result = (StockLog*)realloc(result, (*count + 1) * sizeof(StockLog));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                result = (StockLog*)realloc(result, capacity * sizeof(StockLog));
+            }
             result[*count] = *log;
             (*count)++;
         }
         log = log->next;
     }
-    
+
     return result;
 }
 

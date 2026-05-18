@@ -66,19 +66,23 @@ Purchase* find_purchase(int id) {
  * 获取采购明细
  */
 PurchaseItem* get_purchase_items(int purchase_id, int *count) {
-    PurchaseItem *result = NULL;
+    int capacity = 16;
+    PurchaseItem *result = (PurchaseItem*)malloc(capacity * sizeof(PurchaseItem));
     *count = 0;
-    
+
     PurchaseItem *item = g_purchase_items;
     while (item) {
         if (item->purchase_id == purchase_id) {
-            result = (PurchaseItem*)realloc(result, (*count + 1) * sizeof(PurchaseItem));
+            if (*count >= capacity) {
+                capacity *= 2;
+                result = (PurchaseItem*)realloc(result, capacity * sizeof(PurchaseItem));
+            }
             result[*count] = *item;
             (*count)++;
         }
         item = item->next;
     }
-    
+
     return result;
 }
 
@@ -207,19 +211,23 @@ int receive_purchase(int purchase_id, int operator_id) {
  * 列出采购订单
  */
 Purchase** list_purchases(int status, int *count) {
-    Purchase **result = NULL;
+    int capacity = 16;
+    Purchase **result = (Purchase**)malloc(capacity * sizeof(Purchase*));
     *count = 0;
-    
+
     Purchase *pur = g_purchases;
     while (pur) {
         if (status == -1 || pur->status == status) {
-            result = (Purchase**)realloc(result, (*count + 1) * sizeof(Purchase*));
+            if (*count >= capacity) {
+                capacity *= 2;
+                result = (Purchase**)realloc(result, capacity * sizeof(Purchase*));
+            }
             result[*count] = pur;
             (*count)++;
         }
         pur = pur->next;
     }
-    
+
     return result;
 }
 
@@ -283,11 +291,11 @@ int save_purchase(Purchase *pur) {
     
     snprintf(filepath, sizeof(filepath), "%s/purchase.txt", DATA_DIR);
     
-    snprintf(content, sizeof(content), "%d|%s|%s|%d|%d|%d|%.2f|%ld|%ld|%ld",
+    snprintf(content, sizeof(content), "%d|%s|%s|%d|%d|%d|%.2f|%lld|%lld|%lld",
         pur->id, pur->supplier_id, pur->supplier_name,
         pur->creator_id, pur->approver_id, pur->status,
-        pur->total_amount, (long)pur->created_at,
-        (long)pur->approved_at, (long)pur->completed_at);
+        pur->total_amount, (long long)pur->created_at,
+        (long long)pur->approved_at, (long long)pur->completed_at);
     
     return atomic_append(filepath, content);
 }
@@ -324,16 +332,18 @@ int load_purchases(void) {
         if (strlen(line) == 0) continue;
         
         Purchase *pur = (Purchase*)malloc(sizeof(Purchase));
-        pur->id = atoi(strtok(line, "|"));
-        strcpy(pur->supplier_id, strtok(NULL, "|"));
-        strcpy(pur->supplier_name, strtok(NULL, "|"));
-        pur->creator_id = atoi(strtok(NULL, "|"));
-        pur->approver_id = atoi(strtok(NULL, "|"));
-        pur->status = atoi(strtok(NULL, "|"));
-        pur->total_amount = atof(strtok(NULL, "|"));
-        pur->created_at = (time_t)atoi(strtok(NULL, "|"));
-        pur->approved_at = (time_t)atoi(strtok(NULL, "|"));
-        pur->completed_at = (time_t)atoi(strtok(NULL, "|"));
+        memset(pur, 0, sizeof(Purchase));
+        char *token;
+        token = strtok(line, "|"); pur->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(pur->supplier_id, token, 19);
+        token = strtok(NULL, "|"); if (token) strncpy(pur->supplier_name, token, MAX_NAME_LEN-1);
+        token = strtok(NULL, "|"); pur->creator_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); pur->approver_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); pur->status = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); pur->total_amount = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); pur->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); pur->approved_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); pur->completed_at = token ? (time_t)atoll(token) : 0;
         
         pur->next = g_purchases;
         g_purchases = pur;
@@ -363,13 +373,15 @@ int load_purchase_items(void) {
         if (strlen(line) == 0) continue;
         
         PurchaseItem *item = (PurchaseItem*)malloc(sizeof(PurchaseItem));
-        item->id = atoi(strtok(line, "|"));
-        item->purchase_id = atoi(strtok(NULL, "|"));
-        strcpy(item->product_id, strtok(NULL, "|"));
-        strcpy(item->product_name, strtok(NULL, "|"));
-        item->quantity = atof(strtok(NULL, "|"));
-        item->price = atof(strtok(NULL, "|"));
-        item->received_qty = atof(strtok(NULL, "|"));
+        memset(item, 0, sizeof(PurchaseItem));
+        char *token;
+        token = strtok(line, "|"); item->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); item->purchase_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(item->product_id, token, MAX_ID_LEN-1);
+        token = strtok(NULL, "|"); if (token) strncpy(item->product_name, token, MAX_NAME_LEN-1);
+        token = strtok(NULL, "|"); item->quantity = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); item->price = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); item->received_qty = token ? atof(token) : 0.0f;
         
         item->next = g_purchase_items;
         g_purchase_items = item;
@@ -407,9 +419,9 @@ int write_transaction_log(const char *type, int ref_id, const char *operation,
     char content[2048];
     
     snprintf(filepath, sizeof(filepath), "%s/transaction.log", DATA_DIR);
-    snprintf(content, sizeof(content), "%d|%s|%d|%s|%s|%d|%ld",
+    snprintf(content, sizeof(content), "%d|%s|%d|%s|%s|%d|%lld",
         log->id, log->type, log->ref_id, log->operation,
-        log->data, log->operator_id, (long)log->created_at);
+        log->data, log->operator_id, (long long)log->created_at);
     
     atomic_append(filepath, content);
     
@@ -432,13 +444,15 @@ int load_transaction_logs(void) {
         if (strlen(line) == 0) continue;
         
         TransactionLog *log = (TransactionLog*)malloc(sizeof(TransactionLog));
-        log->id = atoi(strtok(line, "|"));
-        strcpy(log->type, strtok(NULL, "|"));
-        log->ref_id = atoi(strtok(NULL, "|"));
-        strcpy(log->operation, strtok(NULL, "|"));
-        strcpy(log->data, strtok(NULL, "|"));
-        log->operator_id = atoi(strtok(NULL, "|"));
-        log->created_at = (time_t)atoi(strtok(NULL, "|"));
+        memset(log, 0, sizeof(TransactionLog));
+        char *token;
+        token = strtok(line, "|"); log->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(log->type, token, 19);
+        token = strtok(NULL, "|"); log->ref_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(log->operation, token, 19);
+        token = strtok(NULL, "|"); if (token) strncpy(log->data, token, 1023);
+        token = strtok(NULL, "|"); log->operator_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); log->created_at = token ? (time_t)atoll(token) : 0;
         
         log->next = g_transaction_logs;
         g_transaction_logs = log;
@@ -452,9 +466,10 @@ int load_transaction_logs(void) {
  * 查询事务日志
  */
 TransactionLog* query_transaction_logs(const char *type, time_t start, time_t end, int *count) {
-    TransactionLog *result = NULL;
+    int capacity = 16;
+    TransactionLog *result = (TransactionLog*)malloc(capacity * sizeof(TransactionLog));
     *count = 0;
-    
+
     TransactionLog *log = g_transaction_logs;
     while (log) {
         if (type && strcmp(log->type, type) != 0) {
@@ -462,12 +477,15 @@ TransactionLog* query_transaction_logs(const char *type, time_t start, time_t en
             continue;
         }
         if (log->created_at >= start && log->created_at <= end) {
-            result = (TransactionLog*)realloc(result, (*count + 1) * sizeof(TransactionLog));
+            if (*count >= capacity) {
+                capacity *= 2;
+                result = (TransactionLog*)realloc(result, capacity * sizeof(TransactionLog));
+            }
             result[*count] = *log;
             (*count)++;
         }
         log = log->next;
     }
-    
+
     return result;
 }

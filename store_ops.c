@@ -96,15 +96,19 @@ int delete_store(int id) {
 Store** list_stores(int *count) {
     Store **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     Store *store = g_stores;
     while (store) {
-        list = (Store**)realloc(list, (*count + 1) * sizeof(Store*));
+        if (*count >= capacity) {
+            capacity = capacity == 0 ? 16 : capacity * 2;
+            list = (Store**)realloc(list, capacity * sizeof(Store*));
+        }
         list[*count] = store;
         (*count)++;
         store = store->next;
     }
-    
+
     return list;
 }
 
@@ -114,17 +118,21 @@ Store** list_stores(int *count) {
 Store** list_active_stores(int *count) {
     Store **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     Store *store = g_stores;
     while (store) {
         if (store->status == STORE_ACTIVE) {
-            list = (Store**)realloc(list, (*count + 1) * sizeof(Store*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (Store**)realloc(list, capacity * sizeof(Store*));
+            }
             list[*count] = store;
             (*count)++;
         }
         store = store->next;
     }
-    
+
     return list;
 }
 
@@ -227,17 +235,21 @@ int reduce_store_stock(int store_id, const char *product_id, int quantity, int o
 StoreStock** get_product_all_stores(const char *product_id, int *count) {
     StoreStock **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     StoreStock *stock = g_store_stocks;
     while (stock) {
         if (strcmp(stock->product_id, product_id) == 0) {
-            list = (StoreStock**)realloc(list, (*count + 1) * sizeof(StoreStock*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (StoreStock**)realloc(list, capacity * sizeof(StoreStock*));
+            }
             list[*count] = stock;
             (*count)++;
         }
         stock = stock->next;
     }
-    
+
     return list;
 }
 
@@ -514,17 +526,21 @@ int cancel_transfer(int transfer_id, int operator_id) {
 TransferOrder** list_transfers_by_status(int status, int *count) {
     TransferOrder **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     TransferOrder *order = g_transfer_orders;
     while (order) {
         if (status == -1 || order->status == status) {  // -1表示全部
-            list = (TransferOrder**)realloc(list, (*count + 1) * sizeof(TransferOrder*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (TransferOrder**)realloc(list, capacity * sizeof(TransferOrder*));
+            }
             list[*count] = order;
             (*count)++;
         }
         order = order->next;
     }
-    
+
     return list;
 }
 
@@ -534,17 +550,21 @@ TransferOrder** list_transfers_by_status(int status, int *count) {
 TransferOrder** list_transfers_by_store(int store_id, int *count) {
     TransferOrder **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     TransferOrder *order = g_transfer_orders;
     while (order) {
         if (order->from_store_id == store_id || order->to_store_id == store_id) {
-            list = (TransferOrder**)realloc(list, (*count + 1) * sizeof(TransferOrder*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (TransferOrder**)realloc(list, capacity * sizeof(TransferOrder*));
+            }
             list[*count] = order;
             (*count)++;
         }
         order = order->next;
     }
-    
+
     return list;
 }
 
@@ -601,15 +621,19 @@ int update_supplier_finance(int supplier_id, float payment_days, char rating) {
 SupplierFinance** list_supplier_finances(int *count) {
     SupplierFinance **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     SupplierFinance *fin = g_supplier_finances;
     while (fin) {
-        list = (SupplierFinance**)realloc(list, (*count + 1) * sizeof(SupplierFinance*));
+        if (*count >= capacity) {
+            capacity = capacity == 0 ? 16 : capacity * 2;
+            list = (SupplierFinance**)realloc(list, capacity * sizeof(SupplierFinance*));
+        }
         list[*count] = fin;
         (*count)++;
         fin = fin->next;
     }
-    
+
     return list;
 }
 
@@ -736,17 +760,21 @@ Payable* find_payable(int id) {
 Payable** list_payables_by_supplier(int supplier_id, int *count) {
     Payable **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     Payable *payable = g_payables;
     while (payable) {
         if (payable->supplier_id == supplier_id) {
-            list = (Payable**)realloc(list, (*count + 1) * sizeof(Payable*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (Payable**)realloc(list, capacity * sizeof(Payable*));
+            }
             list[*count] = payable;
             (*count)++;
         }
         payable = payable->next;
     }
-    
+
     return list;
 }
 
@@ -756,17 +784,21 @@ Payable** list_payables_by_supplier(int supplier_id, int *count) {
 Payable** list_pending_payables(int *count) {
     Payable **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     Payable *payable = g_payables;
     while (payable) {
         if (payable->status != PAYMENT_COMPLETED) {
-            list = (Payable**)realloc(list, (*count + 1) * sizeof(Payable*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (Payable**)realloc(list, capacity * sizeof(Payable*));
+            }
             list[*count] = payable;
             (*count)++;
         }
         payable = payable->next;
     }
-    
+
     return list;
 }
 
@@ -872,15 +904,19 @@ int settle_supplier(int supplier_id, float amount, const char *method,
 PaymentRecord** list_payment_records(int *count) {
     PaymentRecord **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     PaymentRecord *rec = g_payment_records;
     while (rec) {
-        list = (PaymentRecord**)realloc(list, (*count + 1) * sizeof(PaymentRecord*));
+        if (*count >= capacity) {
+            capacity = capacity == 0 ? 16 : capacity * 2;
+            list = (PaymentRecord**)realloc(list, capacity * sizeof(PaymentRecord*));
+        }
         list[*count] = rec;
         (*count)++;
         rec = rec->next;
     }
-    
+
     return list;
 }
 
@@ -890,17 +926,21 @@ PaymentRecord** list_payment_records(int *count) {
 PaymentRecord** list_supplier_payment_records(int supplier_id, int *count) {
     PaymentRecord **list = NULL;
     *count = 0;
-    
+    int capacity = 0;
+
     PaymentRecord *rec = g_payment_records;
     while (rec) {
         if (rec->supplier_id == supplier_id) {
-            list = (PaymentRecord**)realloc(list, (*count + 1) * sizeof(PaymentRecord*));
+            if (*count >= capacity) {
+                capacity = capacity == 0 ? 16 : capacity * 2;
+                list = (PaymentRecord**)realloc(list, capacity * sizeof(PaymentRecord*));
+            }
             list[*count] = rec;
             (*count)++;
         }
         rec = rec->next;
     }
-    
+
     return list;
 }
 
@@ -1057,16 +1097,16 @@ int load_stores(void) {
         
         Store *store = (Store*)malloc(sizeof(Store));
         memset(store, 0, sizeof(Store));
-        
-        strncpy(store->name, strtok(line, "|"), 99);
-        strncpy(store->address, strtok(NULL, "|"), 255);
-        strncpy(store->phone, strtok(NULL, "|"), 19);
-        strncpy(store->manager_name, strtok(NULL, "|"), 49);
-        store->id = atoi(strtok(NULL, "|"));
-        store->manager_id = atoi(strtok(NULL, "|"));
-        store->status = atoi(strtok(NULL, "|"));
-        store->created_at = (time_t)atoi(strtok(NULL, "|"));
-        store->updated_at = (time_t)atoi(strtok(NULL, "|"));
+        char *token;
+        token = strtok(line, "|"); if (token) strncpy(store->name, token, 99);
+        token = strtok(NULL, "|"); if (token) strncpy(store->address, token, 255);
+        token = strtok(NULL, "|"); if (token) strncpy(store->phone, token, 19);
+        token = strtok(NULL, "|"); if (token) strncpy(store->manager_name, token, 49);
+        token = strtok(NULL, "|"); store->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); store->manager_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); store->status = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); store->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); store->updated_at = token ? (time_t)atoll(token) : 0;
         
         store->next = g_stores;
         g_stores = store;
@@ -1090,10 +1130,10 @@ int save_store(Store *store) {
     snprintf(filepath, sizeof(filepath), "%s/store.txt", DATA_DIR);
     
     snprintf(content, sizeof(content),
-        "%s|%s|%s|%s|%d|%d|%d|%ld|%ld",
+        "%s|%s|%s|%s|%d|%d|%d|%lld|%lld",
         store->name, store->address, store->phone, store->manager_name,
         store->id, store->manager_id, store->status,
-        (long)store->created_at, (long)store->updated_at);
+        (long long)store->created_at, (long long)store->updated_at);
     
     return atomic_append(filepath, content);
 }
@@ -1103,33 +1143,40 @@ int save_store(Store *store) {
  */
 int save_all_stores(void) {
     char filepath[256];
-    char *buffer = NULL;
-    size_t bufsize = 0;
-    
+
     snprintf(filepath, sizeof(filepath), "%s/store.txt", DATA_DIR);
-    
-    bufsize = 65536;
-    buffer = (char*)malloc(bufsize);
+
+    size_t bufsize = 65536;
+    char *buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
+    char *pos = buffer;
+    size_t remaining = bufsize;
+
     Store *store = g_stores;
     while (store) {
-        char line[1024];
-        snprintf(line, sizeof(line),
-            "%s|%s|%s|%s|%d|%d|%d|%ld|%ld\n",
+        int written = snprintf(pos, remaining,
+            "%s|%s|%s|%s|%d|%d|%d|%lld|%lld\n",
             store->name, store->address, store->phone, store->manager_name,
             store->id, store->manager_id, store->status,
-            (long)store->created_at, (long)store->updated_at);
-        
-        if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+            (long long)store->created_at, (long long)store->updated_at);
+
+        if (written >= (int)remaining) {
+            size_t offset = pos - buffer;
             bufsize *= 2;
             buffer = (char*)realloc(buffer, bufsize);
+            pos = buffer + offset;
+            remaining = bufsize - offset;
+            written = snprintf(pos, remaining,
+                "%s|%s|%s|%s|%d|%d|%d|%lld|%lld\n",
+                store->name, store->address, store->phone, store->manager_name,
+                store->id, store->manager_id, store->status,
+                (long long)store->created_at, (long long)store->updated_at);
         }
-        strcat(buffer, line);
+        pos += written;
+        remaining -= written;
         store = store->next;
     }
-    
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
     return result;
@@ -1152,13 +1199,13 @@ int load_store_stocks(void) {
         
         StoreStock *stock = (StoreStock*)malloc(sizeof(StoreStock));
         memset(stock, 0, sizeof(StoreStock));
-        
-        stock->store_id = atoi(strtok(line, "|"));
-        strncpy(stock->product_id, strtok(NULL, "|"), MAX_ID_LEN - 1);
-        stock->quantity = atoi(strtok(NULL, "|"));
-        stock->min_stock = atoi(strtok(NULL, "|"));
-        stock->id = atoi(strtok(NULL, "|"));
-        stock->updated_at = (time_t)atoi(strtok(NULL, "|"));
+        char *token;
+        token = strtok(line, "|"); stock->store_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(stock->product_id, token, MAX_ID_LEN - 1);
+        token = strtok(NULL, "|"); stock->quantity = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); stock->min_stock = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); stock->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); stock->updated_at = token ? (time_t)atoll(token) : 0;
         
         stock->next = g_store_stocks;
         g_store_stocks = stock;
@@ -1182,9 +1229,9 @@ int save_store_stock(StoreStock *stock) {
     snprintf(filepath, sizeof(filepath), "%s/store_stock.txt", DATA_DIR);
     
     snprintf(content, sizeof(content),
-        "%d|%s|%d|%d|%d|%ld",
-        stock->store_id, stock->product_id, stock->quantity, 
-        stock->min_stock, stock->id, (long)stock->updated_at);
+        "%d|%s|%d|%d|%d|%lld",
+        stock->store_id, stock->product_id, stock->quantity,
+        stock->min_stock, stock->id, (long long)stock->updated_at);
     
     return atomic_append(filepath, content);
 }
@@ -1194,32 +1241,38 @@ int save_store_stock(StoreStock *stock) {
  */
 int save_all_store_stocks(void) {
     char filepath[256];
-    char *buffer = NULL;
-    size_t bufsize = 0;
-    
+
     snprintf(filepath, sizeof(filepath), "%s/store_stock.txt", DATA_DIR);
-    
-    bufsize = 65536;
-    buffer = (char*)malloc(bufsize);
+
+    size_t bufsize = 65536;
+    char *buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
+    char *pos = buffer;
+    size_t remaining = bufsize;
+
     StoreStock *stock = g_store_stocks;
     while (stock) {
-        char line[512];
-        snprintf(line, sizeof(line),
-            "%d|%s|%d|%d|%d|%ld\n",
+        int written = snprintf(pos, remaining,
+            "%d|%s|%d|%d|%d|%lld\n",
             stock->store_id, stock->product_id, stock->quantity,
-            stock->min_stock, stock->id, (long)stock->updated_at);
-        
-        if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+            stock->min_stock, stock->id, (long long)stock->updated_at);
+
+        if (written >= (int)remaining) {
+            size_t offset = pos - buffer;
             bufsize *= 2;
             buffer = (char*)realloc(buffer, bufsize);
+            pos = buffer + offset;
+            remaining = bufsize - offset;
+            written = snprintf(pos, remaining,
+                "%d|%s|%d|%d|%d|%lld\n",
+                stock->store_id, stock->product_id, stock->quantity,
+                stock->min_stock, stock->id, (long long)stock->updated_at);
         }
-        strcat(buffer, line);
+        pos += written;
+        remaining -= written;
         stock = stock->next;
     }
-    
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
     return result;
@@ -1244,26 +1297,26 @@ int load_transfers(void) {
         
         TransferOrder *order = (TransferOrder*)malloc(sizeof(TransferOrder));
         memset(order, 0, sizeof(TransferOrder));
-        
-        order->id = atoi(strtok(line, "|"));
-        order->from_store_id = atoi(strtok(NULL, "|"));
-        order->to_store_id = atoi(strtok(NULL, "|"));
-        strncpy(order->from_store_name, strtok(NULL, "|"), 99);
-        strncpy(order->to_store_name, strtok(NULL, "|"), 99);
-        order->status = atoi(strtok(NULL, "|"));
-        order->creator_id = atoi(strtok(NULL, "|"));
-        strncpy(order->creator_name, strtok(NULL, "|"), 49);
-        order->approver_id = atoi(strtok(NULL, "|"));
-        strncpy(order->approver_name, strtok(NULL, "|"), 49);
-        order->out_operator_id = atoi(strtok(NULL, "|"));
-        strncpy(order->out_operator_name, strtok(NULL, "|"), 49);
-        order->in_operator_id = atoi(strtok(NULL, "|"));
-        strncpy(order->in_operator_name, strtok(NULL, "|"), 49);
-        order->created_at = (time_t)atoi(strtok(NULL, "|"));
-        order->approved_at = (time_t)atoi(strtok(NULL, "|"));
-        order->out_at = (time_t)atoi(strtok(NULL, "|"));
-        order->in_at = (time_t)atoi(strtok(NULL, "|"));
-        strncpy(order->remark, strtok(NULL, "|"), 255);
+        char *token;
+        token = strtok(line, "|"); order->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); order->from_store_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); order->to_store_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(order->from_store_name, token, 99);
+        token = strtok(NULL, "|"); if (token) strncpy(order->to_store_name, token, 99);
+        token = strtok(NULL, "|"); order->status = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); order->creator_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(order->creator_name, token, 49);
+        token = strtok(NULL, "|"); order->approver_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(order->approver_name, token, 49);
+        token = strtok(NULL, "|"); order->out_operator_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(order->out_operator_name, token, 49);
+        token = strtok(NULL, "|"); order->in_operator_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(order->in_operator_name, token, 49);
+        token = strtok(NULL, "|"); order->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); order->approved_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); order->out_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); order->in_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(order->remark, token, 255);
         
         order->items = NULL;
         order->next = g_transfer_orders;
@@ -1299,12 +1352,12 @@ int load_transfer_items(void) {
         
         TransferItem *item = (TransferItem*)malloc(sizeof(TransferItem));
         memset(item, 0, sizeof(TransferItem));
-        
-        item->transfer_id = atoi(strtok(line, "|"));
-        strncpy(item->product_id, strtok(NULL, "|"), MAX_ID_LEN - 1);
-        strncpy(item->product_name, strtok(NULL, "|"), MAX_NAME_LEN - 1);
-        item->quantity = atoi(strtok(NULL, "|"));
-        item->id = atoi(strtok(NULL, "|"));
+        char *token;
+        token = strtok(line, "|"); item->transfer_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(item->product_id, token, MAX_ID_LEN - 1);
+        token = strtok(NULL, "|"); if (token) strncpy(item->product_name, token, MAX_NAME_LEN - 1);
+        token = strtok(NULL, "|"); item->quantity = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); item->id = token ? atoi(token) : 0;
         
         // 添加到对应的调拨单
         TransferOrder *order = find_transfer_order(item->transfer_id);
@@ -1331,15 +1384,15 @@ int save_transfer_order(TransferOrder *order) {
     snprintf(filepath, sizeof(filepath), "%s/transfer.txt", DATA_DIR);
     
     snprintf(content, sizeof(content),
-        "%d|%d|%d|%s|%s|%d|%d|%s|%d|%s|%d|%s|%d|%s|%ld|%ld|%ld|%ld|%s",
+        "%d|%d|%d|%s|%s|%d|%d|%s|%d|%s|%d|%s|%d|%s|%lld|%lld|%lld|%lld|%s",
         order->id, order->from_store_id, order->to_store_id,
         order->from_store_name, order->to_store_name,
         order->status, order->creator_id, order->creator_name,
         order->approver_id, order->approver_name,
         order->out_operator_id, order->out_operator_name,
         order->in_operator_id, order->in_operator_name,
-        (long)order->created_at, (long)order->approved_at,
-        (long)order->out_at, (long)order->in_at,
+        (long long)order->created_at, (long long)order->approved_at,
+        (long long)order->out_at, (long long)order->in_at,
         order->remark);
     
     return atomic_append(filepath, content);
@@ -1350,39 +1403,52 @@ int save_transfer_order(TransferOrder *order) {
  */
 int save_all_transfers(void) {
     char filepath[256];
-    char *buffer = NULL;
-    size_t bufsize = 0;
-    
+
     snprintf(filepath, sizeof(filepath), "%s/transfer.txt", DATA_DIR);
-    
-    bufsize = 65536;
-    buffer = (char*)malloc(bufsize);
+
+    size_t bufsize = 65536;
+    char *buffer = (char*)malloc(bufsize);
     if (!buffer) return -1;
-    buffer[0] = '\0';
-    
+    char *pos = buffer;
+    size_t remaining = bufsize;
+
     TransferOrder *order = g_transfer_orders;
     while (order) {
-        char line[2048];
-        snprintf(line, sizeof(line),
-            "%d|%d|%d|%s|%s|%d|%d|%s|%d|%s|%d|%s|%d|%s|%ld|%ld|%ld|%ld|%s\n",
+        int written = snprintf(pos, remaining,
+            "%d|%d|%d|%s|%s|%d|%d|%s|%d|%s|%d|%s|%d|%s|%lld|%lld|%lld|%lld|%s\n",
             order->id, order->from_store_id, order->to_store_id,
             order->from_store_name, order->to_store_name,
             order->status, order->creator_id, order->creator_name,
             order->approver_id, order->approver_name,
             order->out_operator_id, order->out_operator_name,
             order->in_operator_id, order->in_operator_name,
-            (long)order->created_at, (long)order->approved_at,
-            (long)order->out_at, (long)order->in_at,
+            (long long)order->created_at, (long long)order->approved_at,
+            (long long)order->out_at, (long long)order->in_at,
             order->remark);
-        
-        if (strlen(buffer) + strlen(line) + 1 > bufsize) {
+
+        if (written >= (int)remaining) {
+            size_t offset = pos - buffer;
             bufsize *= 2;
             buffer = (char*)realloc(buffer, bufsize);
+            pos = buffer + offset;
+            remaining = bufsize - offset;
+            written = snprintf(pos, remaining,
+                "%d|%d|%d|%s|%s|%d|%d|%s|%d|%s|%d|%s|%d|%s|%lld|%lld|%lld|%lld|%s\n",
+                order->id, order->from_store_id, order->to_store_id,
+                order->from_store_name, order->to_store_name,
+                order->status, order->creator_id, order->creator_name,
+                order->approver_id, order->approver_name,
+                order->out_operator_id, order->out_operator_name,
+                order->in_operator_id, order->in_operator_name,
+                (long long)order->created_at, (long long)order->approved_at,
+                (long long)order->out_at, (long long)order->in_at,
+                order->remark);
         }
-        strcat(buffer, line);
+        pos += written;
+        remaining -= written;
         order = order->next;
     }
-    
+
     int result = atomic_write(filepath, buffer);
     free(buffer);
     return result;
@@ -1424,15 +1490,15 @@ int load_supplier_finances(void) {
         
         SupplierFinance *fin = (SupplierFinance*)malloc(sizeof(SupplierFinance));
         memset(fin, 0, sizeof(SupplierFinance));
-        
-        fin->supplier_id = atoi(strtok(line, "|"));
-        fin->payment_days = atof(strtok(NULL, "|"));
-        fin->rating = strtok(NULL, "|")[0];
-        fin->total_amount = atof(strtok(NULL, "|"));
-        fin->paid_amount = atof(strtok(NULL, "|"));
-        fin->pending_amount = atof(strtok(NULL, "|"));
-        fin->last_payment_date = (time_t)atoi(strtok(NULL, "|"));
-        fin->updated_at = (time_t)atoi(strtok(NULL, "|"));
+        char *token;
+        token = strtok(line, "|"); fin->supplier_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); fin->payment_days = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); fin->rating = token ? token[0] : 0;
+        token = strtok(NULL, "|"); fin->total_amount = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); fin->paid_amount = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); fin->pending_amount = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); fin->last_payment_date = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); fin->updated_at = token ? (time_t)atoll(token) : 0;
         
         fin->next = g_supplier_finances;
         g_supplier_finances = fin;
@@ -1452,10 +1518,10 @@ int save_supplier_finance(SupplierFinance *fin) {
     snprintf(filepath, sizeof(filepath), "%s/supplier_finance.txt", DATA_DIR);
     
     snprintf(content, sizeof(content),
-        "%d|%.2f|%c|%.2f|%.2f|%.2f|%ld|%ld",
+        "%d|%.2f|%c|%.2f|%.2f|%.2f|%lld|%lld",
         fin->supplier_id, fin->payment_days, fin->rating,
         fin->total_amount, fin->paid_amount, fin->pending_amount,
-        (long)fin->last_payment_date, (long)fin->updated_at);
+        (long long)fin->last_payment_date, (long long)fin->updated_at);
     
     return atomic_append(filepath, content);
 }
@@ -1477,18 +1543,18 @@ int load_payables(void) {
         
         Payable *payable = (Payable*)malloc(sizeof(Payable));
         memset(payable, 0, sizeof(Payable));
-        
-        payable->id = atoi(strtok(line, "|"));
-        payable->supplier_id = atoi(strtok(NULL, "|"));
-        strncpy(payable->supplier_name, strtok(NULL, "|"), 99);
-        payable->purchase_id = atoi(strtok(NULL, "|"));
-        payable->amount = atof(strtok(NULL, "|"));
-        payable->paid_amount = atof(strtok(NULL, "|"));
-        payable->pending_amount = atof(strtok(NULL, "|"));
-        payable->status = atoi(strtok(NULL, "|"));
-        payable->due_date = (time_t)atoi(strtok(NULL, "|"));
-        payable->created_at = (time_t)atoi(strtok(NULL, "|"));
-        payable->paid_at = (time_t)atoi(strtok(NULL, "|"));
+        char *token;
+        token = strtok(line, "|"); payable->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); payable->supplier_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(payable->supplier_name, token, 99);
+        token = strtok(NULL, "|"); payable->purchase_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); payable->amount = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); payable->paid_amount = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); payable->pending_amount = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); payable->status = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); payable->due_date = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); payable->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok(NULL, "|"); payable->paid_at = token ? (time_t)atoll(token) : 0;
         
         payable->next = g_payables;
         g_payables = payable;
@@ -1512,11 +1578,11 @@ int save_payable(Payable *payable) {
     snprintf(filepath, sizeof(filepath), "%s/payable.txt", DATA_DIR);
     
     snprintf(content, sizeof(content),
-        "%d|%d|%s|%d|%.2f|%.2f|%.2f|%d|%ld|%ld|%ld",
+        "%d|%d|%s|%d|%.2f|%.2f|%.2f|%d|%lld|%lld|%lld",
         payable->id, payable->supplier_id, payable->supplier_name,
         payable->purchase_id, payable->amount, payable->paid_amount,
         payable->pending_amount, payable->status,
-        (long)payable->due_date, (long)payable->created_at, (long)payable->paid_at);
+        (long long)payable->due_date, (long long)payable->created_at, (long long)payable->paid_at);
     
     return atomic_append(filepath, content);
 }
@@ -1538,17 +1604,17 @@ int load_payment_records(void) {
         
         PaymentRecord *rec = (PaymentRecord*)malloc(sizeof(PaymentRecord));
         memset(rec, 0, sizeof(PaymentRecord));
-        
-        rec->id = atoi(strtok(line, "|"));
-        rec->payable_id = atoi(strtok(NULL, "|"));
-        rec->supplier_id = atoi(strtok(NULL, "|"));
-        rec->amount = atof(strtok(NULL, "|"));
-        strncpy(rec->method, strtok(NULL, "|"), 19);
-        strncpy(rec->reference, strtok(NULL, "|"), 49);
-        rec->operator_id = atoi(strtok(NULL, "|"));
-        strncpy(rec->operator_name, strtok(NULL, "|"), 49);
-        strncpy(rec->remark, strtok(NULL, "|"), 255);
-        rec->paid_at = (time_t)atoi(strtok(NULL, "|"));
+        char *token;
+        token = strtok(line, "|"); rec->id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); rec->payable_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); rec->supplier_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); rec->amount = token ? atof(token) : 0.0f;
+        token = strtok(NULL, "|"); if (token) strncpy(rec->method, token, 19);
+        token = strtok(NULL, "|"); if (token) strncpy(rec->reference, token, 49);
+        token = strtok(NULL, "|"); rec->operator_id = token ? atoi(token) : 0;
+        token = strtok(NULL, "|"); if (token) strncpy(rec->operator_name, token, 49);
+        token = strtok(NULL, "|"); if (token) strncpy(rec->remark, token, 255);
+        token = strtok(NULL, "|"); rec->paid_at = token ? (time_t)atoll(token) : 0;
         
         rec->next = g_payment_records;
         g_payment_records = rec;
@@ -1572,10 +1638,10 @@ int save_payment_record(PaymentRecord *rec) {
     snprintf(filepath, sizeof(filepath), "%s/payment_record.txt", DATA_DIR);
     
     snprintf(content, sizeof(content),
-        "%d|%d|%d|%.2f|%s|%s|%d|%s|%s|%ld",
+        "%d|%d|%d|%.2f|%s|%s|%d|%s|%s|%lld",
         rec->id, rec->payable_id, rec->supplier_id, rec->amount,
         rec->method, rec->reference, rec->operator_id,
-        rec->operator_name, rec->remark, (long)rec->paid_at);
+        rec->operator_name, rec->remark, (long long)rec->paid_at);
     
     return atomic_append(filepath, content);
 }

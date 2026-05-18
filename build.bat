@@ -16,7 +16,7 @@ set OUTPUT=supermarket.exe
 REM 编译
 echo.
 echo 正在编译...
-gcc %SOURCES% -o %OUTPUT% -O2 -Wall -Wextra -flto -std=c99
+gcc %SOURCES% -o %OUTPUT% -O2 -Wall -Wextra -Wpedantic -flto -std=c99
 
 if %errorlevel% equ 0 (
     echo.
