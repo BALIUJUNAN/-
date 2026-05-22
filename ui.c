@@ -262,30 +262,28 @@ void print_hint(const char *format, ...) {
 
 /* ==================== 工具函数 ==================== */
 char* trim_whitespace(char *str) {
-    static char buffer[256];
-    int len, i, start, end;
-    
-    if (str == NULL) return buffer;
-    
+    int len, start, end;
+
+    if (str == NULL) return str;
+
     len = strlen(str);
-    strncpy(buffer, str, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    
+
     /* 去除两端空白 */
-    for (start = 0; start < len && isspace(buffer[start]); start++);
-    for (end = len - 1; end >= start && isspace(buffer[end]); end--);
-    
+    for (start = 0; start < len && isspace((unsigned char)str[start]); start++);
+    for (end = len - 1; end >= start && isspace((unsigned char)str[end]); end--);
+
     if (start > end) {
-        buffer[0] = '\0';
-        return buffer;
+        str[0] = '\0';
+        return str;
     }
-    
-    for (i = start; i <= end; i++) {
-        buffer[i - start] = buffer[i];
+
+    int i;
+    for (i = 0; i <= end - start; i++) {
+        str[i] = str[start + i];
     }
-    buffer[end - start + 1] = '\0';
-    
-    return buffer;
+    str[end - start + 1] = '\0';
+
+    return str;
 }
 
 int is_valid_phone(const char *phone) {
@@ -313,7 +311,11 @@ int is_valid_phone(const char *phone) {
 }
 
 const char* trim_whitespace_const(const char *str) {
-    return trim_whitespace((char*)str);
+    static char buffer[256];
+    if (!str) return buffer;
+    strncpy(buffer, str, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+    return trim_whitespace(buffer);
 }
 
 static void print_aligned(const char *text, int width, TextAlign align) {

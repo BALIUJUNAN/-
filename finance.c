@@ -345,26 +345,27 @@ int load_settlements(void) {
         DailySettlement *sett = (DailySettlement*)malloc(sizeof(DailySettlement));
         memset(sett, 0, sizeof(DailySettlement));
         char *token;
-        token = strtok(line, "|"); sett->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); sett->cashier_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(sett->cashier_name, token, 49);
-        token = strtok(NULL, "|"); sett->settlement_date = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); sett->shift_start = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); sett->shift_end = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); sett->total_orders = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); sett->system_cash = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sett->system_online = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sett->system_total = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sett->actual_cash = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sett->actual_online = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sett->actual_total = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sett->cash_diff = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sett->online_diff = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sett->total_diff = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sett->status = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); sett->created_at = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); sett->confirmed_at = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(sett->remark, token, 511);
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); sett->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sett->cashier_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(sett->cashier_name, token, 49);
+        token = strtok_r(NULL, "|", &saveptr); sett->settlement_date = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sett->shift_start = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sett->shift_end = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sett->total_orders = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sett->system_cash = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sett->system_online = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sett->system_total = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sett->actual_cash = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sett->actual_online = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sett->actual_total = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sett->cash_diff = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sett->online_diff = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sett->total_diff = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sett->status = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sett->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sett->confirmed_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(sett->remark, token, 511);
         
         sett->next = g_settlements;
         g_settlements = sett;
@@ -428,8 +429,9 @@ int save_all_settlements(void) {
         if (written >= (int)remaining) {
             size_t offset = pos - buffer;
             bufsize *= 2;
-            buffer = (char*)realloc(buffer, bufsize);
-            if (!buffer) return -1;
+            char *tmp_buf = (char*)realloc(buffer, bufsize);
+            if (!tmp_buf) { free(buffer); return -1; }
+            buffer = tmp_buf;
             pos = buffer + offset;
             remaining = bufsize - offset;
             written = snprintf(pos, remaining,

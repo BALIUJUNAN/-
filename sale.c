@@ -309,18 +309,19 @@ int load_pending_sales(void) {
         memset(sale, 0, sizeof(Sale));
         
         char *token;
-        token = strtok(line, "|"); sale->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); sale->cashier_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); sale->member_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); sale->total_amount = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sale->discount = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sale->final_amount = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sale->cash_received = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); sale->points_used = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(sale->payment_method, token, 19);
-        token = strtok(NULL, "|"); sale->status = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); sale->created_at = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); sale->completed_at = token ? (time_t)atoll(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); sale->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sale->cashier_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sale->member_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sale->total_amount = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sale->discount = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sale->final_amount = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sale->cash_received = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); sale->points_used = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(sale->payment_method, token, 19);
+        token = strtok_r(NULL, "|", &saveptr); sale->status = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sale->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sale->completed_at = token ? (time_t)atoll(token) : 0;
         
         sale->next = g_pending_sales;
         g_pending_sales = sale;
@@ -527,15 +528,16 @@ int load_stock_logs(void) {
         StockLog *log = (StockLog*)malloc(sizeof(StockLog));
         memset(log, 0, sizeof(StockLog));
         char *token;
-        token = strtok(line, "|"); if (token) strncpy(log->product_id, token, MAX_ID_LEN-1);
-        token = strtok(NULL, "|"); if (token) strncpy(log->type, token, 19);
-        token = strtok(NULL, "|"); log->quantity = token ? atof(token) : 0;
-        token = strtok(NULL, "|"); log->before_stock = token ? atof(token) : 0;
-        token = strtok(NULL, "|"); log->after_stock = token ? atof(token) : 0;
-        token = strtok(NULL, "|"); log->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); log->operator_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(log->remark, token, 255);
-        token = strtok(NULL, "|"); log->created_at = token ? (time_t)atoll(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); log->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(log->product_id, token, MAX_ID_LEN-1);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(log->type, token, 19);
+        token = strtok_r(NULL, "|", &saveptr); log->quantity = token ? atof(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); log->before_stock = token ? atof(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); log->after_stock = token ? atof(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); log->operator_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(log->remark, token, 255);
+        token = strtok_r(NULL, "|", &saveptr); log->created_at = token ? (time_t)atoll(token) : 0;
         
         log->next = g_stock_logs;
         g_stock_logs = log;

@@ -352,23 +352,24 @@ int load_members(void) {
         memset(m, 0, sizeof(Member));
         
         char *token;
-        if (!(token = strtok(line, "|"))) { free(m); continue; }
+        char *saveptr;
+        if (!(token = strtok_r(line, "|", &saveptr))) { free(m); continue; }
         m->id = atoi(token);
-        if (!(token = strtok(NULL, "|"))) { free(m); continue; }
+        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
         strncpy(m->phone, token, sizeof(m->phone) - 1);
-        if (!(token = strtok(NULL, "|"))) { free(m); continue; }
+        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
         strncpy(m->name, token, sizeof(m->name) - 1);
-        if (!(token = strtok(NULL, "|"))) { free(m); continue; }
+        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
         m->level = atoi(token);
-        if (!(token = strtok(NULL, "|"))) { free(m); continue; }
+        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
         m->points = atoi(token);
-        if (!(token = strtok(NULL, "|"))) { free(m); continue; }
+        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
         m->total_consume = atof(token);
-        if (!(token = strtok(NULL, "|"))) { free(m); continue; }
+        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
         m->created_at = (time_t)atoll(token);
-        if (!(token = strtok(NULL, "|"))) { free(m); continue; }
+        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
         m->updated_at = (time_t)atoll(token);
-        if (!(token = strtok(NULL, "|"))) { free(m); continue; }
+        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
         m->last_consume_at = (time_t)atoll(token);
         
         hash_insert(g_member_phone_hash, m->phone, m);
@@ -411,8 +412,9 @@ int save_members(void) {
         if (written >= (int)remaining) {
             size_t offset = pos - buffer;
             bufsize *= 2;
-            buffer = (char*)realloc(buffer, bufsize);
-            if (!buffer) return -1;
+            char *tmp_buf = (char*)realloc(buffer, bufsize);
+            if (!tmp_buf) { free(buffer); return -1; }
+            buffer = tmp_buf;
             pos = buffer + offset;
             remaining = bufsize - offset;
             written = snprintf(pos, remaining, "%d|%s|%s|%d|%d|%.2f|%lld|%lld|%lld\n",
@@ -1010,10 +1012,11 @@ int load_promotions(void) {
         
         char *tokens[18];
         int field_count = 0;
-        char *token = strtok(line, "|");
+        char *saveptr;
+        char *token = strtok_r(line, "|", &saveptr);
         while (token && field_count < 18) {
             tokens[field_count++] = token;
-            token = strtok(NULL, "|");
+            token = strtok_r(NULL, "|", &saveptr);
         }
         
         p->id = atoi(tokens[0]);
@@ -1104,8 +1107,9 @@ int save_all_promotions(void) {
         if (written >= (int)remaining) {
             size_t offset = pos - buffer;
             bufsize *= 2;
-            buffer = (char*)realloc(buffer, bufsize);
-            if (!buffer) return -1;
+            char *tmp_buf = (char*)realloc(buffer, bufsize);
+            if (!tmp_buf) { free(buffer); return -1; }
+            buffer = tmp_buf;
             pos = buffer + offset;
             remaining = bufsize - offset;
             written = snprintf(pos, remaining,
@@ -1379,15 +1383,16 @@ int load_combos(void) {
         ProductCombo *combo = (ProductCombo*)malloc(sizeof(ProductCombo));
         memset(combo, 0, sizeof(ProductCombo));
         
-        char *token = strtok(line, "|");
+        char *saveptr;
+        char *token = strtok_r(line, "|", &saveptr);
         combo->id = atoi(token);
-        strncpy(combo->name, strtok(NULL, "|"), 99);
-        strncpy(combo->barcode, strtok(NULL, "|"), 29);
-        combo->price = atof(strtok(NULL, "|"));
-        combo->cost = atof(strtok(NULL, "|"));
-        combo->status = atoi(strtok(NULL, "|"));
-        combo->created_at = (time_t)atoll(strtok(NULL, "|"));
-        combo->updated_at = (time_t)atoll(strtok(NULL, "|"));
+        strncpy(combo->name, strtok_r(NULL, "|", &saveptr), 99);
+        strncpy(combo->barcode, strtok_r(NULL, "|", &saveptr), 29);
+        combo->price = atof(strtok_r(NULL, "|", &saveptr));
+        combo->cost = atof(strtok_r(NULL, "|", &saveptr));
+        combo->status = atoi(strtok_r(NULL, "|", &saveptr));
+        combo->created_at = (time_t)atoll(strtok_r(NULL, "|", &saveptr));
+        combo->updated_at = (time_t)atoll(strtok_r(NULL, "|", &saveptr));
         
         combo->next = g_combos;
         g_combos = combo;
@@ -1450,8 +1455,9 @@ int save_all_combos(void) {
         if (written >= (int)remaining) {
             size_t offset = pos - buffer;
             bufsize *= 2;
-            buffer = (char*)realloc(buffer, bufsize);
-            if (!buffer) return -1;
+            char *tmp_buf = (char*)realloc(buffer, bufsize);
+            if (!tmp_buf) { free(buffer); return -1; }
+            buffer = tmp_buf;
             pos = buffer + offset;
             remaining = bufsize - offset;
             written = snprintf(pos, remaining,
@@ -1484,20 +1490,21 @@ int load_all_combo_items(void) {
         trim(line);
         if (strlen(line) == 0) continue;
 
-        char *token = strtok(line, "|");
+        char *saveptr;
+        char *token = strtok_r(line, "|", &saveptr);
         if (!token) continue;
         int combo_id = atoi(token);
         ProductCombo *combo = find_combo_by_id(combo_id);
         if (combo) {
             ComboItem *new_item = (ComboItem*)malloc(sizeof(ComboItem));
             memset(new_item, 0, sizeof(ComboItem));
-            token = strtok(NULL, "|");
+            token = strtok_r(NULL, "|", &saveptr);
             strncpy(new_item->product_id, token ? token : "", MAX_ID_LEN - 1);
-            token = strtok(NULL, "|");
+            token = strtok_r(NULL, "|", &saveptr);
             strncpy(new_item->product_name, token ? token : "", MAX_NAME_LEN - 1);
-            token = strtok(NULL, "|");
+            token = strtok_r(NULL, "|", &saveptr);
             new_item->quantity = token ? atoi(token) : 0;
-            token = strtok(NULL, "|");
+            token = strtok_r(NULL, "|", &saveptr);
             new_item->ratio = token ? atof(token) : 0;
             new_item->next = combo->items;
             combo->items = new_item;
@@ -1530,31 +1537,28 @@ int save_combo_item(ComboItem *item) {
 /**
  * 生成批号
  */
-char* generate_batch_no(const char *product_id) {
-    static char batch_no[20];
+void generate_batch_no(const char *product_id, char *out_batch_no) {
     time_t now = time(NULL);
     struct tm *tm = localtime(&now);
-    
+
     (void)product_id;
-    
-    snprintf(batch_no, sizeof(batch_no), "%02d%02d%02d",
+
+    snprintf(out_batch_no, 20, "%02d%02d%02d",
              tm->tm_year % 100, tm->tm_mon + 1, tm->tm_mday);
-    
+
     int max_seq = 0;
     Batch *b = g_batches;
     while (b) {
-        if (strncmp(b->batch_no, batch_no, 6) == 0) {
+        if (strncmp(b->batch_no, out_batch_no, 6) == 0) {
             int seq = atoi(b->batch_no + 6);
             if (seq > max_seq) max_seq = seq;
         }
         b = b->next;
     }
-    
-    snprintf(batch_no, sizeof(batch_no), "%02d%02d%02d%03d",
+
+    snprintf(out_batch_no, 20, "%02d%02d%02d%03d",
              tm->tm_year % 100, tm->tm_mon + 1, tm->tm_mday,
              max_seq + 1);
-    
-    return batch_no;
 }
 
 /**
@@ -1578,8 +1582,7 @@ char* create_batch(const char *product_id, const char *product_name,
     Batch *batch = (Batch*)malloc(sizeof(Batch));
     if (!batch) return NULL;
     
-    char *batch_no = generate_batch_no(product_id);
-    strncpy(batch->batch_no, batch_no, 19);
+    generate_batch_no(product_id, batch->batch_no);
     strncpy(batch->product_id, product_id, MAX_ID_LEN - 1);
     strncpy(batch->product_name, product_name, MAX_NAME_LEN - 1);
     batch->quantity = quantity;
@@ -1607,7 +1610,7 @@ char* create_batch(const char *product_id, const char *product_name,
     save_batch(batch);
     
     printf("批次创建成功: %s, 商品: %s, 数量: %.2f, 单价: ¥%.2f\n",
-           batch_no, product_name, quantity, price);
+           batch->batch_no, product_name, quantity, price);
     
     return batch->batch_no;
 }
@@ -1774,27 +1777,28 @@ int load_batches(void) {
         memset(b, 0, sizeof(Batch));
 
         char *token;
-        token = strtok(line, "|");
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr);
         strcpy(b->batch_no, token ? token : "");
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         strcpy(b->product_id, token ? token : "");
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         strcpy(b->product_name, token ? token : "");
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         b->quantity = token ? atof(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         b->initial_quantity = token ? atof(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         b->price = token ? atof(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         b->production_date = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         b->expiry_date = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         b->received_date = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         b->supplier_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         b->created_at = token ? (time_t)atoll(token) : 0;
         
         Batch **prev = &g_batches;
@@ -1858,8 +1862,9 @@ int save_all_batches(void) {
         if (written >= (int)remaining) {
             size_t offset = pos - buffer;
             bufsize *= 2;
-            buffer = (char*)realloc(buffer, bufsize);
-            if (!buffer) return -1;
+            char *tmp_buf = (char*)realloc(buffer, bufsize);
+            if (!tmp_buf) { free(buffer); return -1; }
+            buffer = tmp_buf;
             pos = buffer + offset;
             remaining = bufsize - offset;
             written = snprintf(pos, remaining,
@@ -1907,7 +1912,7 @@ VipCard* create_vip_card(const char *password) {
     
     if (password && strlen(password) > 0) {
         generate_salt(card->password_salt);
-        strcpy(card->password_hash, hash_password(password, card->password_salt));
+        hash_password(password, card->password_salt, card->password_hash);
     }
     
     card->next = g_vip_cards;
@@ -1955,7 +1960,8 @@ int verify_vip_card_password(const char *card_no, const char *password) {
     VipCard *card = find_vip_card(card_no);
     if (!card) return -1;
     
-    char *hash = hash_password(password, card->password_salt);
+    char hash[65];
+    hash_password(password, card->password_salt, hash);
     return strcmp(hash, card->password_hash) == 0 ? 0 : -1;
 }
 
@@ -1972,7 +1978,7 @@ int change_vip_card_password(const char *card_no, const char *old_password, cons
     }
     
     generate_salt(card->password_salt);
-    strcpy(card->password_hash, hash_password(new_password, card->password_salt));
+    hash_password(new_password, card->password_salt, card->password_hash);
     card->updated_at = time(NULL);
     
     save_all_vip_cards();
@@ -2429,10 +2435,11 @@ int load_vip_cards(void) {
         
         char *tokens[11];
         int field_count = 0;
-        char *token = strtok(line, "|");
+        char *saveptr;
+        char *token = strtok_r(line, "|", &saveptr);
         while (token && field_count < 11) {
             tokens[field_count++] = token;
-            token = strtok(NULL, "|");
+            token = strtok_r(NULL, "|", &saveptr);
         }
         
         strncpy(card->card_no, tokens[0] ? tokens[0] : "", 29);
@@ -2502,8 +2509,9 @@ int save_all_vip_cards(void) {
         if (written >= (int)remaining) {
             size_t offset = pos - buffer;
             bufsize *= 2;
-            buffer = (char*)realloc(buffer, bufsize);
-            if (!buffer) return -1;
+            char *tmp_buf = (char*)realloc(buffer, bufsize);
+            if (!tmp_buf) { free(buffer); return -1; }
+            buffer = tmp_buf;
             pos = buffer + offset;
             remaining = bufsize - offset;
             written = snprintf(pos, remaining,
@@ -2542,27 +2550,28 @@ int load_vip_card_transactions(void) {
         memset(trans, 0, sizeof(VipCardTransaction));
 
         char *token;
-        token = strtok(line, "|");
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr);
         trans->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         strncpy(trans->card_no, token ? token : "", 29);
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         trans->type = token ? atoi(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         trans->amount = token ? atof(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         trans->balance_before = token ? atof(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         trans->balance_after = token ? atof(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         trans->operator_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         strncpy(trans->operator_name, token ? token : "", 49);
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         trans->sale_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         strncpy(trans->remark, token ? token : "", 255);
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &saveptr);
         trans->created_at = token ? (time_t)atoll(token) : 0;
 
         trans->next = g_vip_card_transactions;

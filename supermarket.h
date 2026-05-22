@@ -685,7 +685,7 @@ void free_lines(char **lines, int count);
 
 // ==================== 工具函数 ====================
 char* trim(char *str);
-char* hash_password(const char *password, const char *salt);
+void hash_password(const char *password, const char *salt, char *out_hex);
 char* generate_salt(char *salt);
 void get_timestamp(char *buffer);
 int get_year_week(int *year, int *week);
@@ -828,7 +828,7 @@ Batch** list_expiring_batches(int days, int *count);
 int load_batches(void);
 int save_batch(Batch *batch);
 int save_all_batches(void);
-char* generate_batch_no(const char *product_id);
+void generate_batch_no(const char *product_id, char *out_batch_no);
 const char* get_expiry_category(int days);
 
 // ==================== 销售操作 ====================

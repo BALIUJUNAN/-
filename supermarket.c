@@ -274,43 +274,23 @@ int atomic_write(const char *filepath, const char *content) {
 
 /**
  * 原子追加写入（追加模式）
- * 读取原文件 → 追加内容 → 原子替换
+ * 使用文件锁 + append 模式，O(1) 追加
  */
 int atomic_append(const char *filepath, const char *content) {
-    // 读取原文件内容
-    char *existing = NULL;
-    long fsize = 0;
-    
-    FILE *fpr = fopen(filepath, "rb");
-    if (fpr) {
-        fseek(fpr, 0, SEEK_END);
-        fsize = ftell(fpr);
-        fseek(fpr, 0, SEEK_SET);
-        
-        if (fsize > 0) {
-            existing = (char*)malloc(fsize + 1);
-            fread(existing, 1, fsize, fpr);
-            existing[fsize] = '\0';
-        }
-        fclose(fpr);
+    FILE *fp = fopen(filepath, "a");
+    if (!fp) return -1;
+
+    if (file_lock(fp, LOCKFILE_LOCK) != 0) {
+        fclose(fp);
+        return -1;
     }
-    
-    // 构建新内容
-    char *new_content;
-    if (existing) {
-        new_content = (char*)malloc(fsize + strlen(content) + 2);
-        snprintf(new_content, fsize + strlen(content) + 2, "%s%s\n", existing, content);
-        free(existing);
-    } else {
-        new_content = (char*)malloc(strlen(content) + 2);
-        snprintf(new_content, strlen(content) + 2, "%s\n", content);
-    }
-    
-    // 使用原子写入
-    int result = atomic_write(filepath, new_content);
-    free(new_content);
-    
-    return result;
+
+    fprintf(fp, "%s\n", content);
+    fflush(fp);
+
+    file_unlock(fp);
+    fclose(fp);
+    return 0;
 }
 
 /**
@@ -522,8 +502,7 @@ void sha256_hash_to_hex(const uint8_t hash[SHA256_BLOCK_SIZE], char hex[65]) {
 /**
  * 密码哈希 - 使用 SHA-256 (salt + password)
  */
-char* hash_password(const char *password, const char *salt) {
-    static char hash_hex[65];
+void hash_password(const char *password, const char *salt, char *out_hex) {
     uint8_t hash[SHA256_BLOCK_SIZE];
     SHA256_CTX ctx;
 
@@ -531,9 +510,7 @@ char* hash_password(const char *password, const char *salt) {
     sha256_update(&ctx, (const uint8_t *)salt, strlen(salt));
     sha256_update(&ctx, (const uint8_t *)password, strlen(password));
     sha256_final(&ctx, hash);
-    sha256_hash_to_hex(hash, hash_hex);
-
-    return hash_hex;
+    sha256_hash_to_hex(hash, out_hex);
 }
 
 /**
@@ -594,7 +571,8 @@ void init_sale_id_counter(void) {
             trim(line);
             if (strlen(line) == 0) continue;
             
-            char *token = strtok(line, "|");
+            char *saveptr;
+            char *token = strtok_r(line, "|", &saveptr);
             if (token) {
                 int id = atoi(token);
                 if (id > max_sale_id) {
@@ -614,7 +592,8 @@ void init_sale_id_counter(void) {
             trim(line);
             if (strlen(line) == 0) continue;
             
-            char *token = strtok(line, "|");
+            char *saveptr;
+            char *token = strtok_r(line, "|", &saveptr);
             if (token) {
                 int id = atoi(token);
                 if (id > max_sale_id) {
@@ -791,14 +770,15 @@ int load_employees(void) {
         Employee *emp = (Employee*)malloc(sizeof(Employee));
         memset(emp, 0, sizeof(Employee));
         char *token;
-        token = strtok(line, "|"); emp->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(emp->name, token, MAX_NAME_LEN - 1);
-        token = strtok(NULL, "|"); if (token) strncpy(emp->role, token, 19);
-        token = strtok(NULL, "|"); if (token) strncpy(emp->password_hash, token, 64);
-        token = strtok(NULL, "|"); if (token) strncpy(emp->salt, token, 32);
-        token = strtok(NULL, "|"); emp->status = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); emp->created_at = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); emp->updated_at = token ? (time_t)atoll(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); emp->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(emp->name, token, MAX_NAME_LEN - 1);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(emp->role, token, 19);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(emp->password_hash, token, 64);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(emp->salt, token, 32);
+        token = strtok_r(NULL, "|", &saveptr); emp->status = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); emp->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); emp->updated_at = token ? (time_t)atoll(token) : 0;
 
         char key[32];
         sprintf(key, "%d", emp->id);
@@ -839,8 +819,9 @@ int save_employees(void) {
             if (written >= (int)remaining) {
                 size_t offset = pos - buffer;
                 bufsize *= 2;
-                buffer = (char*)realloc(buffer, bufsize);
-                if (!buffer) return -1;
+                char *tmp_buf = (char*)realloc(buffer, bufsize);
+                if (!tmp_buf) { free(buffer); return -1; }
+                buffer = tmp_buf;
                 pos = buffer + offset;
                 remaining = bufsize - offset;
                 written = snprintf(pos, remaining, "%d|%s|%s|%s|%s|%d|%lld|%lld\n",
@@ -965,18 +946,19 @@ int load_products(void) {
         Product *prod = (Product*)malloc(sizeof(Product));
         memset(prod, 0, sizeof(Product));
         char *token;
-        token = strtok(line, "|"); if (token) strncpy(prod->id, token, MAX_ID_LEN - 1);
-        token = strtok(NULL, "|"); if (token) strncpy(prod->name, token, MAX_NAME_LEN - 1);
-        token = strtok(NULL, "|"); if (token) strncpy(prod->barcode, token, 29);
-        token = strtok(NULL, "|"); prod->price = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); prod->cost = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); prod->stock = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); prod->min_stock = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(prod->category_id, token, 19);
-        token = strtok(NULL, "|"); if (token) strncpy(prod->supplier_id, token, 19);
-        token = strtok(NULL, "|"); prod->status = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); prod->created_at = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); prod->updated_at = token ? (time_t)atoll(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); if (token) strncpy(prod->id, token, MAX_ID_LEN - 1);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(prod->name, token, MAX_NAME_LEN - 1);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(prod->barcode, token, 29);
+        token = strtok_r(NULL, "|", &saveptr); prod->price = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); prod->cost = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); prod->stock = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); prod->min_stock = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(prod->category_id, token, 19);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(prod->supplier_id, token, 19);
+        token = strtok_r(NULL, "|", &saveptr); prod->status = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); prod->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); prod->updated_at = token ? (time_t)atoll(token) : 0;
 
         hash_insert(g_product_hash, prod->id, prod);
         if (strlen(prod->barcode) > 0) {
@@ -1013,8 +995,9 @@ int save_products(void) {
             if (written >= (int)remaining) {
                 size_t offset = pos - buffer;
                 bufsize *= 2;
-                buffer = (char*)realloc(buffer, bufsize);
-                if (!buffer) return -1;
+                char *tmp_buf = (char*)realloc(buffer, bufsize);
+                if (!tmp_buf) { free(buffer); return -1; }
+                buffer = tmp_buf;
                 pos = buffer + offset;
                 remaining = bufsize - offset;
                 written = snprintf(pos, remaining, "%s|%s|%s|%.2f|%.2f|%d|%d|%s|%s|%d|%lld|%lld\n",
@@ -1079,12 +1062,13 @@ int load_suppliers(void) {
         Supplier *sup = (Supplier*)malloc(sizeof(Supplier));
         memset(sup, 0, sizeof(Supplier));
         char *token;
-        token = strtok(line, "|"); if (token) strncpy(sup->name, token, MAX_NAME_LEN-1);
-        token = strtok(NULL, "|"); if (token) strncpy(sup->contact, token, 49);
-        token = strtok(NULL, "|"); if (token) strncpy(sup->phone, token, 19);
-        token = strtok(NULL, "|"); if (token) strncpy(sup->address, token, 255);
-        token = strtok(NULL, "|"); sup->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); sup->status = token ? atoi(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); if (token) strncpy(sup->name, token, MAX_NAME_LEN-1);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(sup->contact, token, 49);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(sup->phone, token, 19);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(sup->address, token, 255);
+        token = strtok_r(NULL, "|", &saveptr); sup->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sup->status = token ? atoi(token) : 0;
 
         char key[32];
         sprintf(key, "%d", sup->id);
@@ -1122,8 +1106,9 @@ int save_suppliers(void) {
             if (written >= (int)remaining) {
                 size_t offset = pos - buffer;
                 bufsize *= 2;
-                buffer = (char*)realloc(buffer, bufsize);
-                if (!buffer) return -1;
+                char *tmp_buf = (char*)realloc(buffer, bufsize);
+                if (!tmp_buf) { free(buffer); return -1; }
+                buffer = tmp_buf;
                 pos = buffer + offset;
                 remaining = bufsize - offset;
                 written = snprintf(pos, remaining, "%s|%s|%s|%s|%d|%d\n",

@@ -247,16 +247,17 @@ int load_schedules(void) {
         Schedule *sch = (Schedule*)malloc(sizeof(Schedule));
         memset(sch, 0, sizeof(Schedule));
         char *token;
-        token = strtok(line, "|"); sch->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); sch->employee_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); sch->year = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); sch->week = token ? atoi(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); sch->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sch->employee_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sch->year = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sch->week = token ? atoi(token) : 0;
 
         for (int i = 0; i < 7; i++) {
-            token = strtok(NULL, "|");
+            token = strtok_r(NULL, "|", &saveptr);
             if (token) strncpy(sch->shifts[i], token, 3);
         }
-        token = strtok(NULL, "|"); sch->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); sch->created_at = token ? (time_t)atoll(token) : 0;
         
         sch->next = g_schedules;
         g_schedules = sch;

@@ -576,11 +576,12 @@ float get_today_sales(void) {
             trim(line);
             if (strlen(line) == 0) continue;
             
-            char *token = strtok(line, "|");
-            for (int i = 0; i < 5; i++) token = strtok(NULL, "|");
+            char *saveptr;
+            char *token = strtok_r(line, "|", &saveptr);
+            for (int i = 0; i < 5; i++) token = strtok_r(NULL, "|", &saveptr);
             float final_amount = atof(token ? token : "0");
-            token = strtok(NULL, "|"); int status = atoi(token ? token : "0");
-            token = strtok(NULL, "|"); time_t created_at = token ? (time_t)atoll(token) : 0;
+            token = strtok_r(NULL, "|", &saveptr); int status = atoi(token ? token : "0");
+            token = strtok_r(NULL, "|", &saveptr); time_t created_at = token ? (time_t)atoll(token) : 0;
 
             if (status == SALE_COMPLETED && created_at >= today_start) {
                 total += final_amount;
@@ -614,10 +615,11 @@ int get_today_orders(void) {
             trim(line);
             if (strlen(line) == 0) continue;
             
-            char *token = strtok(line, "|");
-            for (int i = 0; i < 6; i++) token = strtok(NULL, "|");
+            char *saveptr;
+            char *token = strtok_r(line, "|", &saveptr);
+            for (int i = 0; i < 6; i++) token = strtok_r(NULL, "|", &saveptr);
             int status = atoi(token ? token : "0");
-            token = strtok(NULL, "|"); time_t created_at = token ? (time_t)atoll(token) : 0;
+            token = strtok_r(NULL, "|", &saveptr); time_t created_at = token ? (time_t)atoll(token) : 0;
 
             if (status == SALE_COMPLETED && created_at >= today_start) {
                 count++;
@@ -709,13 +711,14 @@ void get_top_selling_products(int top_n) {
             trim(line);
             if (strlen(line) == 0) continue;
             
-            char *token = strtok(line, "|");
+            char *saveptr;
+            char *token = strtok_r(line, "|", &saveptr);
             int item_id = atoi(token);
-            token = strtok(NULL, "|"); int sale_id = atoi(token);
+            token = strtok_r(NULL, "|", &saveptr); int sale_id = atoi(token);
             char pid[20], pname[50];
-            strncpy(pid, strtok(NULL, "|"), 19);
-            strncpy(pname, strtok(NULL, "|"), 49);
-            token = strtok(NULL, "|"); float qty = atof(token);
+            strncpy(pid, strtok_r(NULL, "|", &saveptr), 19);
+            strncpy(pname, strtok_r(NULL, "|", &saveptr), 49);
+            token = strtok_r(NULL, "|", &saveptr); float qty = atof(token);
             
             (void)item_id;
             
@@ -725,11 +728,12 @@ void get_top_selling_products(int top_n) {
                 char sline[MAX_LINE_LEN];
                 while (fgets(sline, sizeof(sline), fps)) {
                     trim(sline);
-                    char *stok = strtok(sline, "|");
+                    char *inner_saveptr;
+                    char *stok = strtok_r(sline, "|", &inner_saveptr);
                     if (atoi(stok) == sale_id) {
-                        for (int i = 0; i < 6; i++) stok = strtok(NULL, "|");
+                        for (int i = 0; i < 6; i++) stok = strtok_r(NULL, "|", &inner_saveptr);
                         int status = atoi(stok);
-                        stok = strtok(NULL, "|");
+                        stok = strtok_r(NULL, "|", &inner_saveptr);
                         time_t created = stok ? (time_t)atoll(stok) : 0;
                         if (status == SALE_COMPLETED && created >= today_start) {
                             int found = -1;

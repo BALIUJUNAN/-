@@ -1098,15 +1098,16 @@ int load_stores(void) {
         Store *store = (Store*)malloc(sizeof(Store));
         memset(store, 0, sizeof(Store));
         char *token;
-        token = strtok(line, "|"); if (token) strncpy(store->name, token, 99);
-        token = strtok(NULL, "|"); if (token) strncpy(store->address, token, 255);
-        token = strtok(NULL, "|"); if (token) strncpy(store->phone, token, 19);
-        token = strtok(NULL, "|"); if (token) strncpy(store->manager_name, token, 49);
-        token = strtok(NULL, "|"); store->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); store->manager_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); store->status = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); store->created_at = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); store->updated_at = token ? (time_t)atoll(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); if (token) strncpy(store->name, token, 99);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(store->address, token, 255);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(store->phone, token, 19);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(store->manager_name, token, 49);
+        token = strtok_r(NULL, "|", &saveptr); store->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); store->manager_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); store->status = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); store->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); store->updated_at = token ? (time_t)atoll(token) : 0;
         
         store->next = g_stores;
         g_stores = store;
@@ -1163,7 +1164,9 @@ int save_all_stores(void) {
         if (written >= (int)remaining) {
             size_t offset = pos - buffer;
             bufsize *= 2;
-            buffer = (char*)realloc(buffer, bufsize);
+            char *tmp_buf = (char*)realloc(buffer, bufsize);
+            if (!tmp_buf) { free(buffer); return -1; }
+            buffer = tmp_buf;
             pos = buffer + offset;
             remaining = bufsize - offset;
             written = snprintf(pos, remaining,
@@ -1200,12 +1203,13 @@ int load_store_stocks(void) {
         StoreStock *stock = (StoreStock*)malloc(sizeof(StoreStock));
         memset(stock, 0, sizeof(StoreStock));
         char *token;
-        token = strtok(line, "|"); stock->store_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(stock->product_id, token, MAX_ID_LEN - 1);
-        token = strtok(NULL, "|"); stock->quantity = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); stock->min_stock = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); stock->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); stock->updated_at = token ? (time_t)atoll(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); stock->store_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(stock->product_id, token, MAX_ID_LEN - 1);
+        token = strtok_r(NULL, "|", &saveptr); stock->quantity = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); stock->min_stock = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); stock->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); stock->updated_at = token ? (time_t)atoll(token) : 0;
         
         stock->next = g_store_stocks;
         g_store_stocks = stock;
@@ -1260,7 +1264,9 @@ int save_all_store_stocks(void) {
         if (written >= (int)remaining) {
             size_t offset = pos - buffer;
             bufsize *= 2;
-            buffer = (char*)realloc(buffer, bufsize);
+            char *tmp_buf = (char*)realloc(buffer, bufsize);
+            if (!tmp_buf) { free(buffer); return -1; }
+            buffer = tmp_buf;
             pos = buffer + offset;
             remaining = bufsize - offset;
             written = snprintf(pos, remaining,
@@ -1298,25 +1304,26 @@ int load_transfers(void) {
         TransferOrder *order = (TransferOrder*)malloc(sizeof(TransferOrder));
         memset(order, 0, sizeof(TransferOrder));
         char *token;
-        token = strtok(line, "|"); order->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); order->from_store_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); order->to_store_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(order->from_store_name, token, 99);
-        token = strtok(NULL, "|"); if (token) strncpy(order->to_store_name, token, 99);
-        token = strtok(NULL, "|"); order->status = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); order->creator_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(order->creator_name, token, 49);
-        token = strtok(NULL, "|"); order->approver_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(order->approver_name, token, 49);
-        token = strtok(NULL, "|"); order->out_operator_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(order->out_operator_name, token, 49);
-        token = strtok(NULL, "|"); order->in_operator_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(order->in_operator_name, token, 49);
-        token = strtok(NULL, "|"); order->created_at = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); order->approved_at = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); order->out_at = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); order->in_at = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(order->remark, token, 255);
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); order->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); order->from_store_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); order->to_store_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(order->from_store_name, token, 99);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(order->to_store_name, token, 99);
+        token = strtok_r(NULL, "|", &saveptr); order->status = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); order->creator_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(order->creator_name, token, 49);
+        token = strtok_r(NULL, "|", &saveptr); order->approver_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(order->approver_name, token, 49);
+        token = strtok_r(NULL, "|", &saveptr); order->out_operator_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(order->out_operator_name, token, 49);
+        token = strtok_r(NULL, "|", &saveptr); order->in_operator_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(order->in_operator_name, token, 49);
+        token = strtok_r(NULL, "|", &saveptr); order->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); order->approved_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); order->out_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); order->in_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(order->remark, token, 255);
         
         order->items = NULL;
         order->next = g_transfer_orders;
@@ -1353,11 +1360,12 @@ int load_transfer_items(void) {
         TransferItem *item = (TransferItem*)malloc(sizeof(TransferItem));
         memset(item, 0, sizeof(TransferItem));
         char *token;
-        token = strtok(line, "|"); item->transfer_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(item->product_id, token, MAX_ID_LEN - 1);
-        token = strtok(NULL, "|"); if (token) strncpy(item->product_name, token, MAX_NAME_LEN - 1);
-        token = strtok(NULL, "|"); item->quantity = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); item->id = token ? atoi(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); item->transfer_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(item->product_id, token, MAX_ID_LEN - 1);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(item->product_name, token, MAX_NAME_LEN - 1);
+        token = strtok_r(NULL, "|", &saveptr); item->quantity = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); item->id = token ? atoi(token) : 0;
         
         // 添加到对应的调拨单
         TransferOrder *order = find_transfer_order(item->transfer_id);
@@ -1429,7 +1437,9 @@ int save_all_transfers(void) {
         if (written >= (int)remaining) {
             size_t offset = pos - buffer;
             bufsize *= 2;
-            buffer = (char*)realloc(buffer, bufsize);
+            char *tmp_buf = (char*)realloc(buffer, bufsize);
+            if (!tmp_buf) { free(buffer); return -1; }
+            buffer = tmp_buf;
             pos = buffer + offset;
             remaining = bufsize - offset;
             written = snprintf(pos, remaining,
@@ -1491,14 +1501,15 @@ int load_supplier_finances(void) {
         SupplierFinance *fin = (SupplierFinance*)malloc(sizeof(SupplierFinance));
         memset(fin, 0, sizeof(SupplierFinance));
         char *token;
-        token = strtok(line, "|"); fin->supplier_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); fin->payment_days = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); fin->rating = token ? token[0] : 0;
-        token = strtok(NULL, "|"); fin->total_amount = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); fin->paid_amount = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); fin->pending_amount = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); fin->last_payment_date = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); fin->updated_at = token ? (time_t)atoll(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); fin->supplier_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); fin->payment_days = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); fin->rating = token ? token[0] : 0;
+        token = strtok_r(NULL, "|", &saveptr); fin->total_amount = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); fin->paid_amount = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); fin->pending_amount = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); fin->last_payment_date = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); fin->updated_at = token ? (time_t)atoll(token) : 0;
         
         fin->next = g_supplier_finances;
         g_supplier_finances = fin;
@@ -1544,17 +1555,18 @@ int load_payables(void) {
         Payable *payable = (Payable*)malloc(sizeof(Payable));
         memset(payable, 0, sizeof(Payable));
         char *token;
-        token = strtok(line, "|"); payable->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); payable->supplier_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(payable->supplier_name, token, 99);
-        token = strtok(NULL, "|"); payable->purchase_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); payable->amount = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); payable->paid_amount = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); payable->pending_amount = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); payable->status = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); payable->due_date = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); payable->created_at = token ? (time_t)atoll(token) : 0;
-        token = strtok(NULL, "|"); payable->paid_at = token ? (time_t)atoll(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); payable->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); payable->supplier_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(payable->supplier_name, token, 99);
+        token = strtok_r(NULL, "|", &saveptr); payable->purchase_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); payable->amount = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); payable->paid_amount = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); payable->pending_amount = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); payable->status = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); payable->due_date = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); payable->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); payable->paid_at = token ? (time_t)atoll(token) : 0;
         
         payable->next = g_payables;
         g_payables = payable;
@@ -1605,16 +1617,17 @@ int load_payment_records(void) {
         PaymentRecord *rec = (PaymentRecord*)malloc(sizeof(PaymentRecord));
         memset(rec, 0, sizeof(PaymentRecord));
         char *token;
-        token = strtok(line, "|"); rec->id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); rec->payable_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); rec->supplier_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); rec->amount = token ? atof(token) : 0.0f;
-        token = strtok(NULL, "|"); if (token) strncpy(rec->method, token, 19);
-        token = strtok(NULL, "|"); if (token) strncpy(rec->reference, token, 49);
-        token = strtok(NULL, "|"); rec->operator_id = token ? atoi(token) : 0;
-        token = strtok(NULL, "|"); if (token) strncpy(rec->operator_name, token, 49);
-        token = strtok(NULL, "|"); if (token) strncpy(rec->remark, token, 255);
-        token = strtok(NULL, "|"); rec->paid_at = token ? (time_t)atoll(token) : 0;
+        char *saveptr;
+        token = strtok_r(line, "|", &saveptr); rec->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); rec->payable_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); rec->supplier_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); rec->amount = token ? atof(token) : 0.0f;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(rec->method, token, 19);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(rec->reference, token, 49);
+        token = strtok_r(NULL, "|", &saveptr); rec->operator_id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(rec->operator_name, token, 49);
+        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(rec->remark, token, 255);
+        token = strtok_r(NULL, "|", &saveptr); rec->paid_at = token ? (time_t)atoll(token) : 0;
         
         rec->next = g_payment_records;
         g_payment_records = rec;

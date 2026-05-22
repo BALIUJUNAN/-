@@ -52,7 +52,8 @@ int login(const char *username, const char *password) {
     for (int i = 0; i < count; i++) {
         if (strcmp(employees[i]->name, username) == 0) {
             // 验证密码（简化版）
-            char *hash = hash_password(password, employees[i]->salt);
+            char hash[65];
+            hash_password(password, employees[i]->salt, hash);
             if (strcmp(hash, employees[i]->password_hash) == 0) {
                 g_current_user_id = employees[i]->id;
                 strncpy(g_current_user_role, employees[i]->role, 19);
@@ -262,7 +263,7 @@ void show_employee_menu(void) {
                 get_password_input("密码: ", password, sizeof(password));
                 
                 generate_salt(emp.salt);
-                strcpy(emp.password_hash, hash_password(password, emp.salt));
+                hash_password(password, emp.salt, emp.password_hash);
                 
                 int id = add_employee(&emp);
                 if (id > 0) {
@@ -1238,7 +1239,7 @@ void show_system_menu(void) {
             strcpy(admin.name, "admin");
             strcpy(admin.role, "管理员");
             generate_salt(admin.salt);
-            strcpy(admin.password_hash, hash_password("admin123", admin.salt));
+            hash_password("admin123", admin.salt, admin.password_hash);
             
             add_employee(&admin);
             save_employees();
@@ -1364,7 +1365,7 @@ int main(void) {
         strcpy(admin.name, "admin");
         strcpy(admin.role, "管理员");
         generate_salt(admin.salt);
-        strcpy(admin.password_hash, hash_password("admin123", admin.salt));
+        hash_password("admin123", admin.salt, admin.password_hash);
         add_employee(&admin);
         save_employees();
         
