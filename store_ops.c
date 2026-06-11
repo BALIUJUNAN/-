@@ -379,11 +379,11 @@ int approve_transfer(int transfer_id, int approver_id) {
     }
     order->approver_id = approver_id;
     order->approved_at = time(NULL);
-    
+
     // 记录日志
-    write_transaction_log("TRANSFER", transfer_id, "APPROVE", 
+    write_transaction_log("TRANSFER", transfer_id, "APPROVE",
                          "调拨单审批通过", approver_id);
-    
+
     return save_all_transfers();
 }
 
@@ -706,12 +706,13 @@ int generate_payable(int purchase_id) {
  * 手动创建应付账款
  */
 int create_payable(int supplier_id, float amount, const char *remark) {
+    (void)remark;  // 暂未使用，预留接口
     Supplier *sup = find_supplier_by_id(supplier_id);
     if (!sup) return -1;
-    
+
     Payable *payable = (Payable*)malloc(sizeof(Payable));
     memset(payable, 0, sizeof(Payable));
-    
+
     payable->id = generate_id();
     payable->supplier_id = supplier_id;
     strncpy(payable->supplier_name, sup->name, 99);

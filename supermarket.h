@@ -220,9 +220,9 @@ typedef struct Sale {
     int id;
     int cashier_id;
     int member_id;           // 会员ID
-    float total_amount;
-    float discount;
-    float final_amount;
+    float total_amount;      // 原价合计（所有商品原始零售价 × 数量）
+    float discount;          // 总优惠金额（含单品促销折扣 + 会员折扣 + 满减）
+    float final_amount;      // 实收金额
     float cash_received;     // 收款金额
     int points_used;         // 使用积分
     int status;             // 0挂单 1完成 2退款
@@ -239,9 +239,10 @@ typedef struct SaleItem {
     char product_id[MAX_ID_LEN];
     char product_name[MAX_NAME_LEN];
     float quantity;
-    float price;
+    float price;             // 折后单价（含单品促销折扣）
+    float original_price;    // 原始单价（用于小票显示和报表统计）
     float subtotal;
-    float discount;          // 单品折扣
+    float discount;          // 单品折扣（每件优惠金额）
     int is_combo;            // 是否为套装: 0-普通商品, 1-套装
     int combo_id;            // 套装ID（如果是套装）
     struct SaleItem *next;   // 链表指针
@@ -643,6 +644,7 @@ extern HashTable *g_product_hash;
 extern int g_auto_id_counter;
 extern int g_sale_order_counter;  // 销售订单专用计数器，从1开始
 extern int g_member_id_counter;    // 会员ID专用计数器，从1开始
+extern int g_employee_id_counter;  // 员工ID专用计数器，从1开始
 extern int g_current_user_id;
 
 // 会员全局变量
@@ -692,6 +694,7 @@ int get_year_week(int *year, int *week);
 int generate_id(void);
 void init_sale_id_counter(void);
 void format_time(time_t t, char *buffer);
+time_t parse_date_yyyymmdd(const char *date_str);
 typedef struct { time_t start; time_t end; } TimeRange;
 void get_date_range(TimeRange *range, int days_ago);
 
@@ -789,7 +792,7 @@ float calculate_order_discount(Cart *cart, Promotion *promo);
 float calculate_nth_discount(int quantity, Promotion *promo);
 float calculate_buy_m_get_n(int quantity, Promotion *promo, float unit_price);
 float calculate_member_price(Promotion *promo, Member *member, float original_price);
-DiscountInfo calculate_total_discount(Cart *cart, Member *member, const char *product_id, int quantity);
+DiscountInfo calculate_total_discount(Cart *cart, Member *member);
 
 int load_promotions(void);
 int save_promotion(Promotion *p);
@@ -811,7 +814,7 @@ int load_combos(void);
 int save_combo(ProductCombo *combo);
 int save_all_combos(void);
 int load_combo_items(void);
-int save_combo_item(ComboItem *item);
+int save_combo_item(int combo_id, ComboItem *item);
 int load_all_combo_items(void);
 
 // ==================== 批次操作 ====================
@@ -838,13 +841,15 @@ int add_sale_item(int sale_id, SaleItem *item);
 SaleItem* get_sale_items(int sale_id, int *count);
 Sale* find_pending_sale(int sale_id);
 float calculate_sale_total(int sale_id);
-int complete_sale(int sale_id, const char *payment_method, float discount, float cash_received);
+int complete_sale(int sale_id, const char *payment_method, float discount_pct, float discount_amount, float cash_received);
 int hang_sale(int sale_id);
 int cancel_sale(int sale_id);
 int load_pending_sales(void);
 int save_pending_sale(Sale *sale);
+int save_all_pending_sales(void);
 int save_sale_record(Sale *sale);
 int scan_and_sell(int cashier_id, const char *barcode, int quantity);
+void cleanup_cashier_sales(int cashier_id);
 
 // ==================== 采购操作 ====================
 int create_purchase(Purchase *purchase);

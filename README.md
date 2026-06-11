@@ -1,6 +1,6 @@
 # 超市管理系统
 
-基于 ANSI C (C99) 开发的轻量化超市后台管理系统，采用纯文本文件持久化存储，无需数据库依赖。
+基于 ANSI C (C99) 开发的轻量化超市后台管理系统，采用纯文本文件持久化存储，无需数据库依赖。同时提供基于 Python Flask 的 Web 版本。
 
 ## 特性亮点
 
@@ -10,13 +10,22 @@
 - **操作确认机制**：关键操作二次确认，降低误操作风险
 - **模块化架构**：UI 与业务逻辑分离，易于维护扩展
 - **轻量级部署**：纯文本存储，无数据库依赖，编译后单文件运行
+- **双版本支持**：C 终端版 + Python Flask Web 版，满足不同使用场景
 
 ## 系统要求
+
+### C 终端版
 
 - GCC 4.8+ 或 MinGW-w64
 - C99 标准支持
 - Windows XP+ / Linux / macOS
 - 终端支持 ANSI 颜色（大多数现代终端均支持）
+
+### Web 版
+
+- Python 3.6+
+- Flask 框架
+- 现代浏览器
 
 ## 功能模块
 
@@ -29,7 +38,7 @@
 | 销售管理 | 扫码销售、挂单/支付、多种支付方式（现金/微信/支付宝）、连续订单编号 |
 | 采购管理 | 采购订单创建→审批→收货入库，完整状态流转 |
 | 排班管理 | 员工周排班（早班/晚班/休息）、班次统计 |
-| 报表管理 | 销售报表、库存报表、采购报表、盈亏报告 |
+| 报表管理 | 销售报表、库存报表、采购报表、盈亏报告、CSV 导出 |
 
 ### 营销管理
 
@@ -51,34 +60,70 @@
 
 | 模块 | 功能 |
 |------|------|
-| 小票打印 | 支持 ESC/POS 指令打印机、测试页打印、历史小票查看 |
+| 小票打印 | 支持 ESC/POS 指令打印机、测试页打印、历史小票查看、小票文件保存 |
 | 系统设置 | 数据备份、系统信息查看、默认管理员初始化 |
 
 ## 项目结构
 
 ```
 supermarket/
-├── main.c            # 主程序入口、菜单交互
-├── supermarket.h     # 头文件（数据结构、函数声明）
-├── supermarket.c     # 核心实现（哈希表、文件IO、工具函数）
-├── sale.c            # 销售模块（扫码、挂单、支付、订单编号）
-├── purchase.c        # 采购模块（订单、审批、收货）
-├── schedule.c        # 排班模块（周排班、统计）
-├── report.c          # 报表模块（各类报表、导出）
-├── marketing.c       # 营销模块（促销、会员）
-├── finance.c         # 财务模块（储值卡、供应商结算）
-├── store_ops.c       # 门店模块（调拨、套装）
-├── utility.c         # 工具函数
-├── ui.c / ui.h       # UI界面模块（边框、表格、颜色、安全输入）
-├── build.bat         # Windows 编译脚本
-├── build.sh          # Linux/macOS 编译脚本
-├── README.md         # 说明文档
-└── data/             # 数据目录（运行时自动创建）
+├── main.c              # 主程序入口、菜单交互、业务流程控制
+├── supermarket.h       # 合并头文件（宏定义、数据结构、函数声明）
+├── supermarket.c       # 核心实现（哈希表、文件IO、员工管理）
+├── sale.c              # 销售模块（扫码、挂单、支付、订单编号）
+├── purchase.c          # 采购模块（订单、审批、收货）
+├── schedule.c          # 排班模块（周排班、统计）
+├── report.c            # 报表模块（各类报表、CSV导出）
+├── marketing.c         # 营销模块（促销、会员管理）
+├── finance.c           # 财务模块（储值卡、供应商结算）
+├── store_ops.c         # 门店模块（调拨、套装）
+├── utility.c           # 工具函数（时间、验证、文件操作）
+├── ui.c                # UI界面模块实现（边框、表格、颜色、安全输入）
+├── ui.h                # UI界面模块头文件
+├── hash.h              # 哈希表数据结构与 SHA-256 声明
+├── Makefile            # Makefile 构建脚本（支持增量编译）
+├── build.bat           # Windows 编译脚本（MinGW）
+├── build.sh            # Linux/macOS 编译脚本
+├── README.md           # 说明文档
+├── .gitignore          # Git 忽略规则
+├── data/               # 数据目录（纯文本存储，运行时自动创建）
+│   ├── employee.txt    # 员工信息
+│   ├── product.txt     # 商品信息
+│   ├── sales.txt       # 销售记录
+│   ├── member.txt      # 会员信息
+│   ├── promotion.txt   # 促销活动
+│   ├── stock_log.txt   # 库存日志
+│   └── store.txt       # 门店信息
+├── output/             # 输出目录（小票、报表）
+│   └── receipt_*.txt   # 销售小票文件
+└── web/                # Web 版本（Python Flask）
+    ├── app.py          # Flask 应用主程序
+    ├── start.bat       # Windows 启动脚本
+    ├── README.md       # Web 版说明文档
+    ├── instance/       # 数据库目录
+    │   └── supermarket.db  # SQLite 数据库
+    └── templates/      # HTML 模板
+        ├── index.html      # 首页
+        ├── login.html      # 登录页
+        ├── sale.html       # 销售收银页
+        ├── products.html   # 商品管理页
+        ├── members.html    # 会员管理页
+        ├── promotions.html # 促销管理页
+        ├── vipcards.html   # 储值卡管理页
+        └── reports.html    # 报表页面
 ```
 
 ## 快速开始
 
-### 编译
+### C 终端版
+
+#### 编译
+
+**使用 Makefile（推荐，支持增量编译）**
+
+```bash
+make
+```
 
 **Windows (MinGW)**
 
@@ -89,7 +134,7 @@ build.bat
 或手动编译：
 
 ```batch
-gcc main.c supermarket.c sale.c purchase.c schedule.c report.c marketing.c finance.c store_ops.c utility.c ui.c -o supermarket.exe -Wall -std=c99
+gcc main.c supermarket.c sale.c purchase.c schedule.c report.c marketing.c finance.c store_ops.c utility.c ui.c -o supermarket.exe -O2 -Wall -Wextra -Wpedantic -std=c99
 ```
 
 **Linux / macOS**
@@ -102,10 +147,10 @@ chmod +x build.sh
 或手动编译：
 
 ```bash
-gcc main.c supermarket.c sale.c purchase.c schedule.c report.c marketing.c finance.c store_ops.c utility.c ui.c -o supermarket -Wall -std=c99
+gcc main.c supermarket.c sale.c purchase.c schedule.c report.c marketing.c finance.c store_ops.c utility.c ui.c -o supermarket -O2 -Wall -Wextra -Wpedantic -std=c99
 ```
 
-### 运行
+#### 运行
 
 ```bash
 # Windows
@@ -115,9 +160,30 @@ supermarket.exe
 ./supermarket
 ```
 
+#### 清理编译产物
+
+```bash
+make clean
+```
+
+### Web 版
+
+```bash
+# 进入 web 目录
+cd web
+
+# 安装依赖
+pip install flask
+
+# 启动服务
+python app.py
+```
+
+或双击 `web/start.bat` 启动，然后浏览器访问 http://127.0.0.1:5000
+
 ### 首次使用
 
-1. 编译并运行程序
+1. 编译并运行程序（或启动 Web 版）
 2. 系统自动检测并创建默认管理员：
    - **用户名**: `admin`
    - **密码**: `admin123`
@@ -142,6 +208,7 @@ supermarket.exe
 | 文件锁机制 | 支持 Windows/Linux 多平台并发控制 |
 | 密码安全 | 盐值 + SHA256 哈希存储 |
 | 事务日志 | 完整的操作审计追踪 |
+| 增量编译 | Makefile 支持仅重编译修改过的文件 |
 
 ## UI 特性
 
@@ -182,6 +249,8 @@ supermarket.exe
 
 ## 数据存储
 
+### C 终端版
+
 所有数据以 `|` 分隔的文本格式存储在 `data/` 目录：
 
 | 文件 | 说明 |
@@ -208,14 +277,42 @@ supermarket.exe
 | stock_log.txt | 库存日志 |
 | transaction_log.txt | 事务日志 |
 
+### Web 版
+
+使用 SQLite 数据库，数据文件保存在 `web/instance/supermarket.db`
+
 ## 开发说明
 
 ### 编译参数
 
 ```c
--std=c99    // 使用 C99 标准
--Wall       // 启用所有警告
+-std=c99       // 使用 C99 标准
+-Wall          // 启用所有警告
+-Wextra        // 启用额外警告
+-Wpedantic     // 启用严格标准检查
+-O2            // 优化级别 2
+-flto          // 链接时优化
 ```
+
+### 源码规模
+
+| 文件 | 代码行数 | 说明 |
+|------|---------|------|
+| main.c | 2,470 | 主程序、菜单、业务流程 |
+| marketing.c | 2,652 | 营销模块（促销、会员） |
+| store_ops.c | 1,660 | 门店模块（调拨、套装） |
+| supermarket.c | 1,210 | 核心实现（哈希表、文件IO） |
+| utility.c | 815 | 工具函数 |
+| ui.c | 864 | UI 界面模块 |
+| report.c | 713 | 报表模块 |
+| sale.c | 699 | 销售模块 |
+| purchase.c | 495 | 采购模块 |
+| finance.c | 457 | 财务模块 |
+| schedule.c | 289 | 排班模块 |
+| supermarket.h | 1,018 | 合并头文件 |
+| ui.h | 321 | UI 头文件 |
+| hash.h | 46 | 哈希表头文件 |
+| **合计** | **13,709** | |
 
 ### 主要数据结构
 

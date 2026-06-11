@@ -12,9 +12,10 @@
 #endif
 
 // ==================== 全局变量定义 ====================
-int g_auto_id_counter = 1;  // 从1开始自增，会根据已加载数据动态更新
-int g_sale_order_counter = 1;  // 销售订单专用计数器，从1开始，每次+1
-int g_member_id_counter = 1;    // 会员ID专用计数器，从1开始，每次+1
+int g_auto_id_counter = 0;  // 从1开始自增（初始为0，首次++后为1），会根据已加载数据动态更新
+int g_sale_order_counter = 0;  // 销售订单专用计数器（初始为0，首次++后为1）
+int g_member_id_counter = 0;    // 会员ID专用计数器，从1开始，每次+1（初始为0，首次++后为1）
+int g_employee_id_counter = 0;  // 员工ID专用计数器，从1开始自增
 static HashTable *g_employee_hash = NULL;
 HashTable *g_product_hash = NULL;
 static HashTable *g_barcode_hash = NULL;
@@ -341,17 +342,22 @@ void free_lines(char **lines, int count) {
  */
 char* trim(char *str) {
     if (!str) return str;
-    
-    // 去除首部空白
-    while (isspace((unsigned char)*str)) str++;
-    
-    if (*str == 0) return str;
-    
+
+    // 去除首部空白（用memmove将内容移到缓冲区开头）
+    char *start = str;
+    while (isspace((unsigned char)*start)) start++;
+    if (start != str) {
+        size_t len = strlen(start);
+        memmove(str, start, len + 1);  // +1 包含 '\0'
+    }
+
+    if (*str == '\0') return str;
+
     // 去除尾部空白
     char *end = str + strlen(str) - 1;
     while (end > str && isspace((unsigned char)*end)) end--;
     *(end + 1) = '\0';
-    
+
     return str;
 }
 
@@ -528,20 +534,28 @@ void get_timestamp(char *buffer) {
 int get_year_week(int *year, int *week) {
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
-    
+
     *year = t->tm_year + 1900;
-    
+
     // 计算第几周（从每年第一周开始）
     struct tm first_day = {0};
     first_day.tm_year = *year - 1900;
     first_day.tm_mon = 0;
     first_day.tm_mday = 1;
-    time_t first_time = mktime(&first_day);
-    
-    // 第一天是星期几（0=周日）
-    int first_wday = (first_time - now) / (7 * 24 * 3600);
-    *week = ((t->tm_yday + first_wday) / 7) + 1;
-    
+    mktime(&first_day);  // 让系统填充 tm_wday
+
+    // 1月1日是星期几（0=周日）
+    int first_wday = first_day.tm_wday;
+
+    // 计算当前是一年中的第几天（tm_yday 从0开始，+1变为从1开始）
+    int yday = t->tm_yday + 1;
+
+    // 偏移：让周一=0，周日=6
+    int offset = (first_wday == 0) ? 6 : first_wday - 1;
+
+    // 周数 = (天数 + 偏移 - 1) / 7 + 1
+    *week = (yday + offset - 1) / 7 + 1;
+
     return 0;
 }
 
@@ -671,7 +685,7 @@ void cleanup_system(void) {
     save_all_batches();  // 保存批次数据
     save_all_promotions(); // 保存促销数据
     save_config();       // 保存系统配置
-    
+
     // 释放哈希表
     if (g_employee_hash) {
         hash_destroy(g_employee_hash, free);
@@ -692,6 +706,59 @@ void cleanup_system(void) {
         hash_destroy(g_combo_barcode_hash, NULL);
     }
 
+    // 释放链表内存
+    // 释放会员链表
+    Member *m = g_members;
+    while (m) {
+        Member *next = m->next;
+        free(m);
+        m = next;
+    }
+    g_members = NULL;
+
+    // 释放套装链表
+    ProductCombo *combo = g_combos;
+    while (combo) {
+        ProductCombo *next = combo->next;
+        // 释放套装子项
+        ComboItem *ci = combo->items;
+        while (ci) {
+            ComboItem *ci_next = ci->next;
+            free(ci);
+            ci = ci_next;
+        }
+        free(combo);
+        combo = next;
+    }
+    g_combos = NULL;
+
+    // 释放批次链表
+    Batch *batch = g_batches;
+    while (batch) {
+        Batch *next = batch->next;
+        free(batch);
+        batch = next;
+    }
+    g_batches = NULL;
+
+    // 释放促销链表
+    Promotion *promo = g_promotions;
+    while (promo) {
+        Promotion *next = promo->next;
+        free(promo);
+        promo = next;
+    }
+    g_promotions = NULL;
+
+    // 释放储值卡链表
+    VipCard *vc = g_vip_cards;
+    while (vc) {
+        VipCard *next = vc->next;
+        free(vc);
+        vc = next;
+    }
+    g_vip_cards = NULL;
+
     printf("系统资源已清理\n");
 }
 
@@ -701,7 +768,7 @@ void cleanup_system(void) {
  * 添加员工
  */
 int add_employee(Employee *emp) {
-    emp->id = generate_id();
+    emp->id = ++g_employee_id_counter;
     emp->created_at = time(NULL);
     emp->updated_at = emp->created_at;
     emp->status = STATUS_ACTIVE;
@@ -787,6 +854,10 @@ int load_employees(void) {
         // 更新自增ID
         if (emp->id > g_auto_id_counter) {
             g_auto_id_counter = emp->id;
+        }
+        // 更新员工专用计数器
+        if (emp->id > g_employee_id_counter) {
+            g_employee_id_counter = emp->id;
         }
     }
 

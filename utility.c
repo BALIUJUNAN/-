@@ -1,10 +1,11 @@
 /**
  * @file utility.c
  * @brief 工具模块合并文件
- * 
+ *
  * 合并了以下模块：
  * - 小票打印 (printer)
  * - 数据看板 (dashboard)
+ * - 日期解析工具
  */
 
 #include "supermarket.h"
@@ -19,6 +20,34 @@
 #include <sys/stat.h>
 #define mkdir_recursive(dir) mkdir(dir, 0755)
 #endif
+
+// ==================== 日期解析工具 ====================
+
+/**
+ * 将 YYYYMMDD 格式字符串解析为 time_t（UTC 00:00:00）
+ * @param date_str  如 "20250530"
+ * @return Unix 时间戳，解析失败返回 0
+ */
+time_t parse_date_yyyymmdd(const char *date_str) {
+    if (!date_str || strlen(date_str) != 8) return 0;
+
+    int y = 0, m = 0, d = 0;
+    if (sscanf(date_str, "%4d%2d%2d", &y, &m, &d) != 3) return 0;
+    if (y < 1970 || m < 1 || m > 12 || d < 1 || d > 31) return 0;
+
+    struct tm t;
+    memset(&t, 0, sizeof(t));
+    t.tm_year = y - 1900;
+    t.tm_mon  = m - 1;
+    t.tm_mday = d;
+    t.tm_isdst = 0;
+
+#ifdef _WIN32
+    return _mkgmtime(&t);
+#else
+    return timegm(&t);
+#endif
+}
 
 // ==================== 打印模块 ====================
 

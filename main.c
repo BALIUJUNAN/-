@@ -8,6 +8,7 @@
 #include "supermarket.h"
 #include "ui.h"
 #include <conio.h>
+#include <ctype.h>
 #include <limits.h>
 
 // ==================== 全局状态 ====================
@@ -84,17 +85,8 @@ void logout(void) {
             write_transaction_log("AUTH", g_current_user_id, "LOGOUT", log_msg, g_current_user_id);
         }
         
-        // 清理当前用户的挂单（防止切换账号后看到上一个人订单）
-        Sale **prev = &g_pending_sales;
-        while (*prev) {
-            if ((*prev)->cashier_id == g_current_user_id) {
-                Sale *to_free = *prev;
-                *prev = (*prev)->next;
-                free(to_free);
-            } else {
-                prev = &(*prev)->next;
-            }
-        }
+        // 清理当前用户的挂单及其销售明细（防止切换账号后看到上一个人订单）
+        cleanup_cashier_sales(g_current_user_id);
     }
     
     g_current_user_id = 0;
@@ -223,7 +215,11 @@ void show_login_menu(void) {
     
     if (login(username, password) == 0) {
         Employee *emp = find_employee_by_id(g_current_user_id);
-        print_success("登录成功！欢迎 %s [%s]", emp->name, emp->role);
+        if (emp) {
+            print_success("登录成功！欢迎 %s [%s]", emp->name, emp->role);
+        } else {
+            print_success("登录成功！");
+        }
     } else {
         print_error("用户名或密码错误");
     }
@@ -555,23 +551,31 @@ void show_product_menu(void) {
             case 4: {
                 char id[MAX_ID_LEN];
                 get_safe_string("商品ID: ", id, sizeof(id));
-                
+
                 Product *p = find_product_by_id(id);
                 if (p) {
                     char input[50];
-                    
+
                     print_info("当前名称: %s (直接回车跳过)", p->name);
                     get_safe_string("新名称: ", input, sizeof(input));
                     if (strlen(input) > 0) strncpy(p->name, input, MAX_NAME_LEN - 1);
-                    
+
                     print_info("当前售价: ¥%.2f (直接回车跳过)", p->price);
                     float f = get_safe_float("新售价: ");
                     if (f > 0) p->price = f;
-                    
+
                     print_info("当前库存: %d (直接回车跳过)", p->stock);
-                    int n = get_safe_int("新库存: ", 0, 999999);
-                    if (n >= 0) p->stock = n;
-                    
+                    char stock_input[32];
+                    get_safe_string("新库存: ", stock_input, sizeof(stock_input));
+                    if (strlen(stock_input) > 0) {
+                        int n = atoi(stock_input);
+                        if (n >= 0 && n <= 999999) {
+                            p->stock = n;
+                        } else {
+                            print_warning("库存值无效，保持原值");
+                        }
+                    }
+
                     update_product(p);
                     save_products();
                     print_success("商品信息已更新");
@@ -708,48 +712,93 @@ void show_sale_menu(void) {
                     table_end();
                 }
                 
-                /* 计算折扣 */
+                /* ===== 会员查找（所有支付方式通用） ===== */
+                Member *pay_member = sale_check->member_id > 0
+                    ? find_member_by_id(sale_check->member_id) : NULL;
+
+                if (!pay_member) {
+                    /* 自动提示输入会员信息，支持手机号或储值卡号 */
+                    char member_input[30] = {0};
+                    print_hint("提示: 输入会员手机号可享受会员折扣，直接回车跳过");
+                    get_safe_string("会员手机号（可选）: ", member_input, sizeof(member_input));
+                    trim(member_input);
+
+                    if (strlen(member_input) > 0) {
+                        pay_member = find_member_by_phone(member_input);
+                        if (!pay_member) {
+                            /* 尝试按储值卡号查找绑定的会员 */
+                            VipCard *vc = g_vip_cards;
+                            while (vc) {
+                                if (strcmp(vc->card_no, member_input) == 0) break;
+                                vc = vc->next;
+                            }
+                            if (vc && vc->member_id > 0)
+                                pay_member = find_member_by_id(vc->member_id);
+                        }
+
+                        if (pay_member) {
+                            sale_check->member_id = pay_member->id;
+                            print_success("已识别会员: %s [%s]",
+                                         pay_member->name,
+                                         get_member_level_name(pay_member->level));
+                        } else {
+                            print_warning("未找到该会员，将按普通顾客结算");
+                        }
+                    }
+                }
+
+                /* ===== 计算折扣（会员已在上面确定） ===== */
                 DiscountInfo discount_info = {0};
-                
+
                 if (item_count > 0) {
                     Cart *temp_cart = cart_create();
-                    
                     for (int i = 0; i < item_count; i++) {
                         cart_add_item(temp_cart, items[i].product_id, items[i].quantity);
                     }
-                    
-                    Member *member = sale_check->member_id > 0 ? find_member_by_id(sale_check->member_id) : NULL;
-
-                    discount_info = calculate_total_discount(temp_cart, member,
-                        items[0].product_id, (int)items[0].quantity);
-
+                    discount_info = calculate_total_discount(temp_cart, pay_member);
                     cart_destroy(temp_cart);
                 }
-                
-                print_info("应付金额: ¥%.2f", total);
-                
+
+                /* 会员/VIP 百分比折扣和满减固定金额 */
+                float member_pct = discount_info.has_member_discount
+                    ? discount_info.member_discount_rate : 0;
+                float override_amount  = discount_info.has_override
+                    ? discount_info.override_discount   : 0;
+
+                /* 计算会员折扣后、实付金额（所有支付方式通用） */
+                float final_pay = total * (1 - member_pct / 100.0f) - override_amount;
+                if (final_pay < 0) final_pay = 0;
+
+                print_info("商品总价: ¥%.2f", total);
                 /* 折扣信息 */
-                print_title_box_single("折扣详情");
                 if (discount_info.has_item_discount) {
-                    print_info("单品促销折扣: %.0f%%", discount_info.item_discount_rate);
+                    /* 单品促销折扣金额 = 总折扣金额 - 会员折扣金额 - 满减金额 */
+                    float member_discount_amt = pay_member
+                        ? total * (member_pct / 100.0f) : 0;
+                    float item_disc = discount_info.total_discount_amount
+                                      - member_discount_amt - override_amount;
+                    if (item_disc > 0) {
+                        print_info("单品促销折扣: -¥%.2f", item_disc);
+                    }
                 }
-                if (discount_info.has_member_discount) {
-                    print_info("会员折扣: %.0f%%", discount_info.member_discount_rate);
+                if (pay_member && discount_info.has_member_discount) {
+                    print_info("会员折扣 [%s]: %.0f%%  ( -¥%.2f )",
+                               get_member_level_name(pay_member->level),
+                               member_pct, total * (member_pct / 100.0f));
                 }
                 if (discount_info.has_override) {
-                    print_info("满减优惠: ¥%.2f", discount_info.override_discount);
+                    print_info("满减优惠: -¥%.2f", override_amount);
                 }
-                print_info("综合折扣率: %.1f%%", discount_info.total_discount_rate);
-                print_info("预计优惠: ¥%.2f", discount_info.total_discount_amount);
-                
+                print_info("应付金额: ¥%.2f", final_pay);
+
                 char method[20];
                 printf("\n支付方式选择:\n");
                 printf("1. 现金\n");
                 printf("2. 微信\n");
                 printf("3. 支付宝\n");
-                printf("4. 储值卡（需绑定会员且有储值卡）\n");
+                printf("4. 储值卡（需有储值卡余额）\n");
                 int pay_choice = get_safe_int("请选择支付方式: ", 1, 4);
-                
+
                 switch (pay_choice) {
                     case 1: strcpy(method, "现金"); break;
                     case 2: strcpy(method, "微信"); break;
@@ -757,113 +806,117 @@ void show_sale_menu(void) {
                     case 4: strcpy(method, "储值卡"); break;
                     default: strcpy(method, "现金"); break;
                 }
-                
-                float discount_input = get_safe_float("额外折扣(%%，0表示无额外折扣): ");
-                float discount = (discount_input > 0) ? discount_input : discount_info.total_discount_rate;
-                
-                float cash_received = total;
-                
-                // 储值卡支付处理
+
+                float cash_received = final_pay;
+
+                /* =========== 储值卡支付（储值卡只是支付工具，不叠加额外折扣） =========== */
                 if (strcmp(method, "储值卡") == 0) {
-                    // 检查是否有会员
-                    Member *pay_member = sale_check->member_id > 0 ? find_member_by_id(sale_check->member_id) : NULL;
-                    
                     if (!pay_member) {
-                        // 没有绑定会员，尝试通过手机号或卡号查找
+                        print_error("储值卡支付需先绑定会员，请输入会员手机号");
                         char search_input[30];
-                        get_safe_string("请输入会员手机号或储值卡号: ", search_input, sizeof(search_input));
-                        
+                        get_safe_string("会员手机号或储值卡号: ", search_input, sizeof(search_input));
                         pay_member = find_member_by_phone(search_input);
-                        
                         if (!pay_member) {
-                            // 尝试作为储值卡号查找
-                            VipCard *vip_card = NULL;
-                            VipCard *temp = g_vip_cards;
-                            while (temp) {
-                                if (strcmp(temp->card_no, search_input) == 0) {
-                                    vip_card = temp;
-                                    break;
-                                }
-                                temp = temp->next;
+                            VipCard *vc = g_vip_cards;
+                            while (vc) {
+                                if (strcmp(vc->card_no, search_input) == 0) break;
+                                vc = vc->next;
                             }
-                            
-                            if (vip_card && vip_card->member_id > 0) {
-                                pay_member = find_member_by_id(vip_card->member_id);
-                            }
+                            if (vc && vc->member_id > 0)
+                                pay_member = find_member_by_id(vc->member_id);
                         }
-                    }
-                    
-                    if (!pay_member) {
-                        print_error("未找到该会员，请确认手机号或卡号正确");
-                        break;
-                    }
-                    
-                    // 检查会员是否有储值卡
-                    VipCard *vip_card = NULL;
-                    VipCard *temp = g_vip_cards;
-                    while (temp) {
-                        if (temp->member_id == pay_member->id && temp->status == 1) {
-                            vip_card = temp;
+                        if (!pay_member) {
+                            print_error("未找到该会员，无法使用储值卡");
                             break;
                         }
-                        temp = temp->next;
+                        /* 重新计算折扣 */
+                        discount_info = calculate_total_discount(
+                            NULL, pay_member);  // 已在上面算过，此处兜底
+                        member_pct = discount_info.has_member_discount
+                            ? discount_info.member_discount_rate : 0;
+                        override_amount = discount_info.has_override
+                            ? discount_info.override_discount : 0;
+                        final_pay = total * (1 - member_pct / 100.0f) - override_amount;
+                        if (final_pay < 0) final_pay = 0;
+                        cash_received = final_pay;
                     }
-                    
+
+                    VipCard *vip_card = NULL;
+                    {
+                        VipCard *t = g_vip_cards;
+                        while (t) {
+                            if (t->member_id == pay_member->id && t->status == 1) {
+                                vip_card = t; break;
+                            }
+                            t = t->next;
+                        }
+                    }
                     if (!vip_card) {
                         print_error("该会员没有储值卡，请先办理储值卡");
                         break;
                     }
-                    
-                    // 检查储值卡余额
-                    float vip_discount_pct = get_vip_card_discount_percent(pay_member);
-                    float vip_price = total * (1 - vip_discount_pct / 100);
-                    
-                    print_info("会员: %s (%s)", pay_member->name, get_member_level_name(pay_member->level));
+
+                    print_info("会员: %s [%s]",
+                               pay_member->name,
+                               get_member_level_name(pay_member->level));
                     print_info("储值卡余额: ¥%.2f", vip_card->balance);
-                    print_info("储值卡折扣: %.0f%%", vip_discount_pct);
-                    print_info("折后金额: ¥%.2f", vip_price);
-                    
-                    if (vip_card->balance < vip_price) {
-                        print_error("储值卡余额不足！余额: ¥%.2f", vip_card->balance);
+                    if (pay_member && discount_info.has_member_discount) {
+                        print_info("会员折扣: %.0f%% ( -¥%.2f )",
+                                   member_pct, total * (member_pct / 100.0f));
+                    }
+                    if (discount_info.has_override) {
+                        print_info("满减优惠: -¥%.2f", override_amount);
+                    }
+                    print_info("应付金额: ¥%.2f", final_pay);
+
+                    if (vip_card->balance < final_pay) {
+                        print_error("储值卡余额不足！余额: ¥%.2f，需支付: ¥%.2f",
+                                    vip_card->balance, final_pay);
                         break;
                     }
-                    
-                    // 储值卡支付不需要找零
-                    cash_received = vip_price;
-                    
+
+                    // 验证储值卡支付密码
+                    char pay_password[50];
+                    get_password_input("请输入储值卡支付密码: ", pay_password, sizeof(pay_password));
+                    if (verify_vip_card_password(vip_card->card_no, pay_password) != 0) {
+                        print_error("支付密码错误，支付已取消");
+                        break;
+                    }
+
                     char confirm_msg[100];
-                    snprintf(confirm_msg, sizeof(confirm_msg), "确认使用储值卡支付 ¥%.2f？", vip_price);
+                    snprintf(confirm_msg, sizeof(confirm_msg),
+                             "确认使用储值卡支付 ¥%.2f？", final_pay);
                     if (confirm_action(confirm_msg)) {
-                        // 扣除储值卡余额
-                        if (consume_vip_card(vip_card->card_no, vip_price, sale_id, g_current_user_id, "购物消费") == 0) {
-                            // 储值卡支付完成后，更新折扣为包含储值卡折扣
-                            discount = discount_info.total_discount_rate + vip_discount_pct;
-                            if (complete_sale(sale_id, method, discount, cash_received) == 0) {
+                        if (consume_vip_card(vip_card->card_no, final_pay, sale_id,
+                                             g_current_user_id, "购物消费") == 0) {
+                            if (complete_sale(sale_id, method,
+                                              member_pct, override_amount,
+                                              final_pay) == 0) {
                                 print_success("储值卡支付完成！");
-                                print_success("消费金额: ¥%.2f，余额: ¥%.2f", vip_price, vip_card->balance);
+                                print_success("消费金额: ¥%.2f，余额: ¥%.2f",
+                                              final_pay, vip_card->balance);
                             } else {
                                 print_error("支付失败");
                             }
                         } else {
                             print_error("储值卡扣款失败");
                         }
-                        break;
-                    } else {
-                        break;
                     }
+                    break;
                 }
-                
+
+                /* =========== 现金/微信/支付宝 =========== */
                 if (strcmp(method, "现金") == 0) {
                     cash_received = get_safe_float("实收金额: ¥");
                 }
-                
+
                 if (confirm_action("确认完成支付？")) {
-                    if (complete_sale(sale_id, method, discount, cash_received) == 0) {
+                    if (complete_sale(sale_id, method,
+                                      member_pct, override_amount, cash_received) == 0) {
                         if (strcmp(method, "现金") == 0) {
-                            float final_amount = total * (1 - discount/100);
-                            float change = cash_received - final_amount;
-                            print_success("实收: ¥%.2f | 找零: ¥%.2f", 
-                                         cash_received, change > 0 ? change : 0);
+                            float change = cash_received - final_pay;
+                            print_success("实收: ¥%.2f | 找零: ¥%.2f",
+                                          cash_received, change > 0 ? change : 0);
                         }
                         print_success("支付完成！");
                     } else {
@@ -1185,11 +1238,12 @@ void show_report_menu(void) {
                 break;
             }
             
-            case 5:
+            case 5: {
                 show_export_menu();
                 int export_choice = get_safe_int("请选择导出类型: ", 1, 5);
                 handle_export(export_choice);
                 break;
+            }
             
             default:
                 print_warning("无效选择");
@@ -1291,15 +1345,50 @@ void show_printer_menu(void) {
 
         case 2: {
             print_info("请输入打印机端口:");
-            print_hint("Windows: LPT1, COM1");
+            print_hint("Windows: LPT1, COM1, LPT2, COM2");
             print_hint("Linux: /dev/usb/lp0, /dev/lp0");
-            
+            print_hint("输入 0 返回上级菜单");
+            printf("\n");
+
             char device[256];
             get_safe_string("端口: ", device, sizeof(device));
-            if (strlen(device) > 0) {
-                printer_set_device(device);
-                print_success("已设置打印机端口: %s", device);
+
+            /* 检查是否输入返回 */
+            if (strcmp(device, "0") == 0) {
+                break;
             }
+
+            /* 验证端口格式 */
+            if (strlen(device) == 0) {
+                print_warning("端口不能为空！");
+                break;
+            }
+
+            /* Windows 端口格式验证 (LPT1-LPT9, COM1-COM9) */
+            /* Linux 端口格式验证 (/dev/usb/lp0, /dev/lp0 等) */
+            int valid = 0;
+            if (toupper(device[0]) == 'L' && toupper(device[1]) == 'P' &&
+                toupper(device[2]) == 'T' && device[3] >= '1' && device[3] <= '9' &&
+                device[4] == '\0') {
+                valid = 1;  /* LPT1-LPT9 */
+            }
+            else if (toupper(device[0]) == 'C' && toupper(device[1]) == 'O' &&
+                     toupper(device[2]) == 'M' && device[3] >= '1' && device[3] <= '9' &&
+                     device[4] == '\0') {
+                valid = 1;  /* COM1-COM9 */
+            }
+            else if (strncmp(device, "/dev/", 5) == 0 && strlen(device) > 5) {
+                valid = 1;  /* Linux /dev/ 设备 */
+            }
+
+            if (!valid) {
+                print_warning("端口格式不正确！");
+                print_hint("正确的格式: LPT1, COM1, /dev/usb/lp0");
+                break;
+            }
+
+            printer_set_device(device);
+            print_success("已设置打印机端口: %s", device);
             break;
         }
 
@@ -1354,7 +1443,8 @@ int main(void) {
     
     /* 检查是否需要初始化管理员 */
     int emp_count = 0;
-    list_employees(&emp_count);
+    Employee **emp_list = list_employees(&emp_count);
+    free(emp_list);
     if (emp_count == 0) {
         printf("\n");
         print_title_box_single("首次使用");
@@ -1388,13 +1478,14 @@ int main(void) {
 // ==================== 套装管理菜单 ====================
 
 void show_combo_menu(void) {
-    print_title_box("套装管理");
-    
     if (!check_permission("管理员") && !check_permission("店长")) {
         print_error("权限不足，需要管理员或店长权限");
         return;
     }
-    
+
+    while (1) {
+    print_title_box("套装管理");
+
     printf("1. 创建套装\n");
     printf("2. 套装列表\n");
     printf("3. 添加套装商品\n");
@@ -1402,7 +1493,7 @@ void show_combo_menu(void) {
     printf("5. 下架套装\n");
     printf("0. 返回\n");
     printf("\n请选择: ");
-    
+
     int choice = get_safe_int("", 0, 5);
     
     switch (choice) {
@@ -1486,10 +1577,112 @@ void show_combo_menu(void) {
             }
             break;
         }
-        
-        case 0:
+
+        case 4: {
+            int combo_id = get_safe_int("套装ID: ", 1, 99999);
+            ProductCombo *combo = find_combo_by_id(combo_id);
+            if (!combo) {
+                print_error("未找到该套装");
+                break;
+            }
+
+            /* 套装基本信息 */
+            print_title_box_single("套装详情");
+
+            TableColumn info_cols[] = {
+                {"项目", 14, ALIGN_LEFT},
+                {"内容", 26, ALIGN_LEFT}
+            };
+
+            table_begin(info_cols, 2);
+
+            char info_buf[5][2][64];
+            snprintf(info_buf[0][0], sizeof(info_buf[0][0]), "ID");
+            snprintf(info_buf[0][1], sizeof(info_buf[0][1]), "%d", combo->id);
+            snprintf(info_buf[1][0], sizeof(info_buf[1][0]), "名称");
+            snprintf(info_buf[1][1], sizeof(info_buf[1][1]), "%s", combo->name);
+            snprintf(info_buf[2][0], sizeof(info_buf[2][0]), "条码");
+            snprintf(info_buf[2][1], sizeof(info_buf[2][1]), "%s", combo->barcode);
+            snprintf(info_buf[3][0], sizeof(info_buf[3][0]), "售价");
+            snprintf(info_buf[3][1], sizeof(info_buf[3][1]), "¥%.2f", combo->price);
+            snprintf(info_buf[4][0], sizeof(info_buf[4][0]), "状态");
+            snprintf(info_buf[4][1], sizeof(info_buf[4][1]), "%s",
+                     combo->status == COMBO_ACTIVE ? "在售" : "已下架");
+
+            table_draw_header();
+            for (int i = 0; i < 5; i++) {
+                const char *row[] = {info_buf[i][0], info_buf[i][1]};
+                table_draw_row(row);
+            }
+            table_end();
+
+            /* 套装子商品列表 */
+            ComboItem *ci = combo->items;
+            if (!ci) {
+                print_warning("该套装暂无子商品");
+            } else {
+                print_info("=== 套装子商品 ===");
+
+                TableColumn item_cols[] = {
+                    {"商品ID", 12, ALIGN_LEFT},
+                    {"商品名称", 20, ALIGN_LEFT},
+                    {"数量", 8, ALIGN_RIGHT}
+                };
+
+                table_begin(item_cols, 3);
+                table_draw_header();
+
+                char item_buf[3][64];
+                int item_count = 0;
+                while (ci) {
+                    snprintf(item_buf[0], sizeof(item_buf[0]), "%s", ci->product_id);
+                    snprintf(item_buf[1], sizeof(item_buf[1]), "%s", ci->product_name);
+                    snprintf(item_buf[2], sizeof(item_buf[2]), "%d", ci->quantity);
+                    const char *row[] = {item_buf[0], item_buf[1], item_buf[2]};
+                    table_draw_row(row);
+                    item_count++;
+                    ci = ci->next;
+                }
+
+                table_end();
+                print_info("共 %d 种子商品", item_count);
+            }
+
+            wait_for_key();
             break;
-    }
+        }
+
+        case 5: {
+            int combo_id = get_safe_int("套装ID: ", 1, 99999);
+            ProductCombo *combo = find_combo_by_id(combo_id);
+            if (!combo) {
+                print_error("未找到该套装");
+                break;
+            }
+
+            if (combo->status == COMBO_INACTIVE) {
+                print_warning("该套装已处于下架状态");
+                break;
+            }
+
+            char confirm_msg[128];
+            snprintf(confirm_msg, sizeof(confirm_msg),
+                     "确定要下架套装 [%s]（ID: %d）？", combo->name, combo->id);
+
+            if (confirm_action(confirm_msg)) {
+                if (delete_combo(combo_id) == 0) {
+                    print_success("套装 [%s] 已下架", combo->name);
+                } else {
+                    print_error("下架失败");
+                }
+            }
+            break;
+        }
+
+        case 0:
+            return;
+        }
+    }  // end while
 }
 
 // ==================== 库存调拨菜单 ====================
@@ -1568,27 +1761,30 @@ int select_store(const char *prompt) {
     input[strcspn(input, "\n")] = '\0';
     
     int sel = atoi(input);
-    free(stores);
-    
-    if (sel == 0) return -1;
-    
+
+    if (sel == 0) { free(stores); return -1; }
+
     // 检查是序号还是ID
     if (sel > 0 && sel <= count) {
-        return stores[sel - 1]->id;
+        int result = stores[sel - 1]->id;
+        free(stores);
+        return result;
     }
-    
+
+    free(stores);
     // 按ID查找
     return sel;
 }
 
 void show_transfer_menu(void) {
-    print_title_box("库存调拨");
-    
     if (!check_permission("管理员") && !check_permission("店长") && !check_permission("库管")) {
         print_error("权限不足");
         return;
     }
-    
+
+    while (1) {
+    print_title_box("库存调拨");
+
     print_info("=== 门店管理 ===");
     printf("1. 添加门店\n");
     printf("2. 门店列表\n");
@@ -1602,7 +1798,7 @@ void show_transfer_menu(void) {
     printf("8. 调拨单列表\n");
     printf("0. 返回\n");
     printf("\n请选择: ");
-    
+
     int choice = get_safe_int("", 0, 8);
     
     switch (choice) {
@@ -1722,92 +1918,96 @@ void show_transfer_menu(void) {
             free(list);
             break;
         }
-        
+
         case 0:
-            break;
-    }
+            return;
+        }
+    }  // end while
 }
 
 // ==================== 供应商结算菜单 ====================
 
 void show_supplier_settlement_menu(void) {
-    print_title_box("供应商结算");
-    
     if (!check_permission("管理员") && !check_permission("店长")) {
         print_error("权限不足");
         return;
     }
-    
-    printf("1. 应付款汇总\n");
-    printf("2. 按供应商查看\n");
-    printf("3. 付款\n");
-    printf("4. 设置供应商账期/评级\n");
-    printf("0. 返回\n");
-    printf("\n请选择: ");
-    
-    int choice = get_safe_int("", 0, 4);
-    
-    switch (choice) {
-        case 1:
-            print_payables_summary();
-            wait_for_key();
-            break;
-        
-        case 2: {
-            int supplier_id = get_safe_int("供应商ID: ", 1, 99999);
-            time_t now = time(NULL);
-            time_t start = now - 90 * 24 * 3600;
-            generate_supplier_statement(supplier_id, start, now);
-            wait_for_key();
-            break;
-        }
-        
-        case 3: {
-            int payable_id = get_safe_int("应付单ID: ", 1, 99999);
-            float amount = get_safe_float("付款金额: ¥");
-            char method[20];
-            get_safe_string("付款方式: ", method, sizeof(method));
-            char ref[50];
-            get_safe_string("参考号: ", ref, sizeof(ref));
-            
-            if (confirm_action("确认付款？")) {
-                if (record_payment(payable_id, amount, method, ref, g_current_user_id, "") == 0) {
-                    print_success("付款成功");
-                } else {
-                    print_error("付款失败");
+
+    while (1) {
+        print_title_box("供应商结算");
+
+        printf("1. 应付款汇总\n");
+        printf("2. 按供应商查看\n");
+        printf("3. 付款\n");
+        printf("4. 设置供应商账期/评级\n");
+        printf("0. 返回\n");
+        printf("\n请选择: ");
+
+        int choice = get_safe_int("", 0, 4);
+
+        switch (choice) {
+            case 1:
+                print_payables_summary();
+                wait_for_key();
+                break;
+
+            case 2: {
+                int supplier_id = get_safe_int("供应商ID: ", 1, 99999);
+                time_t now = time(NULL);
+                time_t start = now - 90 * 24 * 3600;
+                generate_supplier_statement(supplier_id, start, now);
+                wait_for_key();
+                break;
+            }
+
+            case 3: {
+                int payable_id = get_safe_int("应付单ID: ", 1, 99999);
+                float amount = get_safe_float("付款金额: ¥");
+                char method[20];
+                get_safe_string("付款方式: ", method, sizeof(method));
+                char ref[50];
+                get_safe_string("参考号: ", ref, sizeof(ref));
+
+                if (confirm_action("确认付款？")) {
+                    if (record_payment(payable_id, amount, method, ref, g_current_user_id, "") == 0) {
+                        print_success("付款成功");
+                    } else {
+                        print_error("付款失败");
+                    }
                 }
+                break;
             }
-            break;
-        }
-        
-        case 4: {
-            int supplier_id = get_safe_int("供应商ID: ", 1, 99999);
-            float days = get_safe_float("账期(天): ");
-            char rating[4];
-            get_safe_string("评级(A/B/C/D): ", rating, sizeof(rating));
-            
-            if (confirm_action("确认更新供应商信息？")) {
-                update_supplier_finance(supplier_id, days, rating[0]);
-                print_success("更新成功");
+
+            case 4: {
+                int supplier_id = get_safe_int("供应商ID: ", 1, 99999);
+                float days = get_safe_float("账期(天): ");
+                char rating[4];
+                get_safe_string("评级(A/B/C/D): ", rating, sizeof(rating));
+
+                if (confirm_action("确认更新供应商信息？")) {
+                    update_supplier_finance(supplier_id, days, rating[0]);
+                    print_success("更新成功");
+                }
+                break;
             }
-            break;
+
+            case 0:
+                return;
         }
-        
-        case 0:
-            break;
     }
 }
 
 // ==================== 促销管理菜单 ====================
 
 void show_promotion_menu(void) {
-    print_title_box("促销管理");
-    
     if (!check_permission("管理员") && !check_permission("店长")) {
         print_error("权限不足");
         return;
     }
-    
+
+    while (1) {
+    print_title_box("促销管理");
+
     printf("1. 创建单品折扣\n");
     printf("2. 创建满减促销\n");
     printf("3. 创建第N件优惠\n");
@@ -1816,7 +2016,7 @@ void show_promotion_menu(void) {
     printf("6. 促销列表\n");
     printf("0. 返回\n");
     printf("\n请选择: ");
-    
+
     int choice = get_safe_int("", 0, 6);
     
     switch (choice) {
@@ -1837,9 +2037,9 @@ void show_promotion_menu(void) {
             
             char date_str[20];
             get_safe_string("开始时间(YYYYMMDD): ", date_str, sizeof(date_str));
-            sscanf(date_str, "%lld", (long long*)&promo.start_time);
+            promo.start_time = parse_date_yyyymmdd(date_str);
             get_safe_string("结束时间(YYYYMMDD): ", date_str, sizeof(date_str));
-            sscanf(date_str, "%lld", (long long*)&promo.end_time);
+            promo.end_time = parse_date_yyyymmdd(date_str);
             
             promo.type = PROMOTION_TYPE_DISCOUNT;
             promo.priority = 1;
@@ -1859,9 +2059,9 @@ void show_promotion_menu(void) {
             
             char date_str[20];
             get_safe_string("开始时间(YYYYMMDD): ", date_str, sizeof(date_str));
-            sscanf(date_str, "%lld", (long long*)&promo.start_time);
+            promo.start_time = parse_date_yyyymmdd(date_str);
             get_safe_string("结束时间(YYYYMMDD): ", date_str, sizeof(date_str));
-            sscanf(date_str, "%lld", (long long*)&promo.end_time);
+            promo.end_time = parse_date_yyyymmdd(date_str);
             
             promo.type = PROMOTION_TYPE_OVERRIDE;
             promo.priority = 10;
@@ -1889,9 +2089,9 @@ void show_promotion_menu(void) {
             
             char date_str[20];
             get_safe_string("开始时间(YYYYMMDD): ", date_str, sizeof(date_str));
-            sscanf(date_str, "%lld", (long long*)&promo.start_time);
+            promo.start_time = parse_date_yyyymmdd(date_str);
             get_safe_string("结束时间(YYYYMMDD): ", date_str, sizeof(date_str));
-            sscanf(date_str, "%lld", (long long*)&promo.end_time);
+            promo.end_time = parse_date_yyyymmdd(date_str);
             
             promo.type = PROMOTION_TYPE_NTH_DISCOUNT;
             promo.priority = 2;
@@ -1919,9 +2119,9 @@ void show_promotion_menu(void) {
             
             char date_str[20];
             get_safe_string("开始时间(YYYYMMDD): ", date_str, sizeof(date_str));
-            sscanf(date_str, "%lld", (long long*)&promo.start_time);
+            promo.start_time = parse_date_yyyymmdd(date_str);
             get_safe_string("结束时间(YYYYMMDD): ", date_str, sizeof(date_str));
-            sscanf(date_str, "%lld", (long long*)&promo.end_time);
+            promo.end_time = parse_date_yyyymmdd(date_str);
             
             promo.type = PROMOTION_TYPE_BUY_M_GET_N;
             promo.priority = 2;
@@ -1949,9 +2149,9 @@ void show_promotion_menu(void) {
             
             char date_str[20];
             get_safe_string("开始时间(YYYYMMDD): ", date_str, sizeof(date_str));
-            sscanf(date_str, "%lld", (long long*)&promo.start_time);
+            promo.start_time = parse_date_yyyymmdd(date_str);
             get_safe_string("结束时间(YYYYMMDD): ", date_str, sizeof(date_str));
-            sscanf(date_str, "%lld", (long long*)&promo.end_time);
+            promo.end_time = parse_date_yyyymmdd(date_str);
             
             promo.type = PROMOTION_TYPE_MEMBER_PRICE;
             promo.priority = 3;
@@ -2004,22 +2204,24 @@ void show_promotion_menu(void) {
             free(list);
             break;
         }
-        
+
         case 0:
-            break;
-    }
+            return;
+        }
+    }  // end while
 }
 
 // ==================== 储值卡菜单 ====================
 
 void show_vipcard_menu(void) {
-    print_title_box("储值卡管理");
-    
     if (!check_permission("管理员") && !check_permission("店长")) {
         print_error("权限不足");
         return;
     }
-    
+
+    while (1) {
+    print_title_box("储值卡管理");
+
     printf("1. 创建储值卡\n");
     printf("2. 储值卡充值\n");
     printf("3. 储值卡消费\n");
@@ -2066,8 +2268,21 @@ void show_vipcard_menu(void) {
             char card_no[30];
             get_safe_string("储值卡号: ", card_no, sizeof(card_no));
             float amount = get_safe_float("消费金额: ¥");
-            
-            if (amount > 0 && confirm_action("确认消费？")) {
+
+            if (amount <= 0) {
+                print_error("消费金额必须大于0");
+                break;
+            }
+
+            // 验证支付密码
+            char pay_pwd[50];
+            get_password_input("支付密码: ", pay_pwd, sizeof(pay_pwd));
+            if (verify_vip_card_password(card_no, pay_pwd) != 0) {
+                print_error("支付密码错误，消费已取消");
+                break;
+            }
+
+            if (confirm_action("确认消费？")) {
                 if (consume_vip_card(card_no, amount, 0, g_current_user_id, "") == 0) {
                     print_success("消费成功！");
                 } else {
@@ -2215,22 +2430,24 @@ void show_vipcard_menu(void) {
             print_vip_card_summary();
             wait_for_key();
             break;
-        
+
         case 0:
-            break;
-    }
+            return;
+        }
+    }  // end while
 }
 
 // ==================== 会员管理 ====================
 
 void show_member_menu(void) {
-    print_title_box("会员管理");
-    
     if (!check_permission("管理员") && !check_permission("店长")) {
         print_error("权限不足");
         return;
     }
-    
+
+    while (1) {
+    print_title_box("会员管理");
+
     printf("1. 新增会员\n");
     printf("2. 会员列表\n");
     printf("3. 查询会员\n");
@@ -2463,9 +2680,9 @@ void show_member_menu(void) {
             }
             break;
         }
-        
-        case 0:
-            break;
-    }
-}
 
+        case 0:
+            return;
+        }
+    }  // end while
+}

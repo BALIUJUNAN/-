@@ -5,10 +5,10 @@
 
 #include "supermarket.h"
 #include <stdlib.h>
-#include <sys/stat.h>
 
 #ifdef _WIN32
 #include <direct.h>
+#include <sys/stat.h>
 #define mkdir_recursive(dir) _mkdir(dir)
 #else
 #include <sys/stat.h>
@@ -98,13 +98,15 @@ void generate_sales_report(time_t start, time_t end, const char *format) {
         char *token;
         char *saveptr;
         
-        // 解析: id|cashier_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
+        // 解析: id|cashier_id|member_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
         token = strtok_r(copy, "|", &saveptr);
         sale.id = token ? atoi(token) : 0;
         
         token = strtok_r(NULL, "|", &saveptr);
         sale.cashier_id = token ? atoi(token) : 0;
-        
+
+        token = strtok_r(NULL, "|", &saveptr);  // member_id（跳过）
+
         token = strtok_r(NULL, "|", &saveptr);
         sale.total_amount = token ? atof(token) : 0.0f;
         
@@ -212,36 +214,38 @@ int export_sales_csv(time_t start, time_t end, const char *filename) {
             char *token;
             char *saveptr;
             
-            // 解析字段: id|cashier_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
+            // 解析字段: id|cashier_id|member_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
             token = strtok_r(copy, "|", &saveptr);
             sale.id = token ? atoi(token) : 0;
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.cashier_id = token ? atoi(token) : 0;
-            
+
+            token = strtok_r(NULL, "|", &saveptr);  // member_id（跳过）
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.total_amount = token ? atof(token) : 0.0f;
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.discount = token ? atof(token) : 0.0f;
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.final_amount = token ? atof(token) : 0.0f;
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             if (token) strncpy(sale.payment_method, token, sizeof(sale.payment_method) - 1);
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.status = token ? atoi(token) : 0;
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.created_at = token ? (time_t)atoll(token) : 0;
-            
+
             if (sale.created_at < start || sale.created_at > end) continue;
-            
+
             char time_str[32];
             format_time(sale.created_at, time_str);
-            
+
             fprintf(fp, "%d,%d,%s,%.2f,%.2f,%.2f,%s,%s\n",
                 sale.id, sale.cashier_id, time_str,
                 sale.total_amount, sale.discount, sale.final_amount,
@@ -250,7 +254,7 @@ int export_sales_csv(time_t start, time_t end, const char *filename) {
         }
         fclose(src);
     }
-    
+
     fclose(fp);
     printf("销售报表已导出: %s\n", filepath);
     return 0;
@@ -323,28 +327,30 @@ int export_sales_html(time_t start, time_t end, const char *filename) {
             
             token = strtok_r(copy, "|", &saveptr);
             sale.id = token ? atoi(token) : 0;
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.cashier_id = token ? atoi(token) : 0;
-            
+
+            token = strtok_r(NULL, "|", &saveptr);  // member_id（跳过）
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.total_amount = token ? atof(token) : 0.0f;
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.discount = token ? atof(token) : 0.0f;
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.final_amount = token ? atof(token) : 0.0f;
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             if (token) strncpy(sale.payment_method, token, sizeof(sale.payment_method) - 1);
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.status = token ? atoi(token) : 0;
-            
+
             token = strtok_r(NULL, "|", &saveptr);
             sale.created_at = token ? (time_t)atoll(token) : 0;
-            
+
             if (sale.created_at < start || sale.created_at > end) continue;
             
             char time_str[32];
@@ -527,102 +533,91 @@ static float get_product_cost(const char *product_id, time_t before_date) {
 }
 
 /**
- * 计算时间段内的销售成本（基于真实进价）
- */
-static float calculate_sales_cost(time_t start, time_t end) {
-    float total_cost = 0;
-    
-    // 遍历所有采购明细，获取每个商品在该时间段内的平均进价
-    // 简化处理：使用采购单中商品的最接近进价
-    
-    PurchaseItem *item = g_purchase_items;
-    while (item) {
-        // 检查该采购单是否在时间范围内
-        Purchase *pur = g_purchases;
-        while (pur) {
-            if (pur->id == item->purchase_id &&
-                pur->completed_at >= start && pur->completed_at <= end &&
-                pur->status == PURCHASE_COMPLETED) {
-                // 累加采购成本（用于计算库存成本）
-                total_cost += item->price * item->received_qty;
-                break;
-            }
-            pur = pur->next;
-        }
-        item = item->next;
-    }
-    
-    return total_cost;
-}
-
-/**
  * 生成盈亏报告 - 使用真实进价
  */
 void generate_profit_loss_report(time_t start, time_t end) {
     printf("\n========== 盈亏报告 ==========\n");
-    
+
     char start_str[32], end_str[32];
     format_time(start, start_str);
     format_time(end, end_str);
     printf("统计周期: %s 至 %s\n\n", start_str, end_str);
-    
-    // 1. 销售收入
-    float sales_revenue = 0;
-    
+
+    // 1. 销售收入与优惠统计
+    float sales_original = 0;   // 原价总额
+    float sales_revenue = 0;    // 实收总额
+    float total_discount = 0;   // 总优惠
+    int completed_orders = 0;
+
     char sales_path[256];
     snprintf(sales_path, sizeof(sales_path), "%s/sales.txt", DATA_DIR);
-    
+
     FILE *fp = fopen(sales_path, "r");
     if (fp) {
         char line[MAX_LINE_LEN];
         while (fgets(line, sizeof(line), fp)) {
             trim(line);
             if (strlen(line) == 0) continue;
-            
-            // 复制一份用于分割
+
             char copy[MAX_LINE_LEN];
             strncpy(copy, line, sizeof(copy) - 1);
             copy[sizeof(copy) - 1] = '\0';
-            
-            Sale sale;
-            memset(&sale, 0, sizeof(Sale));
-            
+
             char *token;
             char *saveptr;
-            
-            // 解析: id|cashier_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
-            token = strtok_r(copy, "|", &saveptr);
-            sale.id = token ? atoi(token) : 0;
-            
+
+            // 解析: id|cashier_id|member_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
+            token = strtok_r(copy, "|", &saveptr);  // id
+            token = strtok_r(NULL, "|", &saveptr);   // cashier_id
+            token = strtok_r(NULL, "|", &saveptr);   // member_id
+
+            float total_amount = 0, discount = 0, final_amount = 0;
+            int status = 0;
+            time_t created_at = 0;
+
             token = strtok_r(NULL, "|", &saveptr);
-            sale.cashier_id = token ? atoi(token) : 0;
-            
+            total_amount = token ? atof(token) : 0.0f;
+
             token = strtok_r(NULL, "|", &saveptr);
-            sale.total_amount = token ? atof(token) : 0.0f;
-            
+            discount = token ? atof(token) : 0.0f;
+
             token = strtok_r(NULL, "|", &saveptr);
-            sale.discount = token ? atof(token) : 0.0f;
-            
+            final_amount = token ? atof(token) : 0.0f;
+
+            token = strtok_r(NULL, "|", &saveptr);  // payment_method
+
             token = strtok_r(NULL, "|", &saveptr);
-            sale.final_amount = token ? atof(token) : 0.0f;
-            
-            token = strtok_r(NULL, "|", &saveptr); // payment_method (跳过)
-            
+            status = token ? atoi(token) : 0;
+
             token = strtok_r(NULL, "|", &saveptr);
-            sale.status = token ? atoi(token) : 0;
-            
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.created_at = token ? (time_t)atoll(token) : 0;
-            
-            if (sale.created_at >= start && sale.created_at <= end &&
-                sale.status == SALE_COMPLETED) {
-                sales_revenue += sale.final_amount;
+            created_at = token ? (time_t)atoll(token) : 0;
+
+            if (created_at >= start && created_at <= end && status == SALE_COMPLETED) {
+                sales_original += total_amount;      // 原价合计
+                total_discount += discount;           // 总优惠
+                sales_revenue += final_amount;        // 实收
+                completed_orders++;
             }
         }
         fclose(fp);
     }
-    
-    // 2. 采购成本（已完成采购的总额）
+
+    // 2. 计算销售商品的真实成本（从库存变动日志中获取出库记录）
+    float cogs = 0;  // Cost of Goods Sold 销售成本
+    {
+        int log_count = 0;
+        StockLog *logs = query_stock_logs(NULL, start, end, &log_count);
+        for (int i = 0; i < log_count; i++) {
+            if (strcmp(logs[i].type, "出库") == 0) {
+                // 优先从采购记录中获取进价，否则用商品表进价
+                float cost = get_product_cost(logs[i].product_id, logs[i].created_at);
+                cogs += cost * logs[i].quantity;
+            }
+        }
+        if (logs) free(logs);
+    }
+
+    // 3. 采购成本统计（仅用于参考展示）
     float purchase_cost = 0;
     Purchase *pur = g_purchases;
     while (pur) {
@@ -632,36 +627,40 @@ void generate_profit_loss_report(time_t start, time_t end) {
         }
         pur = pur->next;
     }
-    
-    // 3. 计算销售毛利
-    // 毛利 = 销售收入 - 销售商品的真实成本
-    // 这里简化处理：使用采购成本作为参考，实际销售成本需要根据销售明细计算
-    float gross_profit = sales_revenue - purchase_cost * 0.8;  // 简化估算
-    
-    // 4. 月固定成本摊销
-    // 计算时间段内的天数
+
+    // 4. 计算毛利 = 实收 - 销售成本
+    float gross_profit = sales_revenue - cogs;
+
+    // 5. 月固定成本摊销
     float days = (end - start) / (24.0f * 3600.0f);
     float monthly_fixed = g_config.monthly_fixed_cost;
     float period_fixed_cost = monthly_fixed * (days / 30.0f);
-    
-    // 5. 净利润
+
+    // 6. 净利润
     float net_profit = gross_profit - period_fixed_cost;
-    float profit_rate = sales_revenue > 0 ? (gross_profit / sales_revenue * 100) : 0;
-    
-    printf("【收入分析】\n");
-    printf("销售收入:     ¥%.2f\n", sales_revenue);
+    float gross_margin = sales_revenue > 0 ? (gross_profit / sales_revenue * 100) : 0;
+    float net_margin = sales_revenue > 0 ? (net_profit / sales_revenue * 100) : 0;
+
+    printf("【销售概况】\n");
+    printf("完成订单数:   %d 笔\n", completed_orders);
+    printf("原价总额:     ¥%.2f\n", sales_original);
+    printf("优惠总额:     ¥%.2f\n", total_discount);
+    printf("实收总额:     ¥%.2f\n", sales_revenue);
+
     printf("\n【成本分析】\n");
-    printf("采购成本:     ¥%.2f\n", purchase_cost);
-    printf("固定成本摊销: ¥%.2f (月固定: ¥%.2f)\n", period_fixed_cost, monthly_fixed);
+    printf("销售成本:     ¥%.2f (基于库存出库记录)\n", cogs);
+    printf("同期采购总额: ¥%.2f (参考)\n", purchase_cost);
+    printf("固定成本摊销: ¥%.2f (月固定: ¥%.2f, 天数: %.1f)\n", period_fixed_cost, monthly_fixed, days);
+
     printf("\n【利润分析】\n");
-    printf("毛利:         ¥%.2f (毛利率: %.1f%%)\n", gross_profit, profit_rate);
-    printf("净利:         ¥%.2f\n", net_profit);
+    printf("毛利:         ¥%.2f (毛利率: %.1f%%)\n", gross_profit, gross_margin);
+    printf("净利:         ¥%.2f (净利率: %.1f%%)\n", net_profit, net_margin);
     printf("==============================\n\n");
-    
+
     // 打印说明
-    printf("[注] 毛利率 = 毛利 / 销售收入\n");
-    printf("[注] 净利 = 毛利 - 固定成本摊销\n");
-    printf("[注] 历史采购数据缺失时，使用商品表进价估算\n\n");
+    printf("[注] 销售成本 = 期间内出库商品的进价合计\n");
+    printf("[注] 毛利 = 实收总额 - 销售成本\n");
+    printf("[注] 净利 = 毛利 - 固定成本摊销\n\n");
 }
 
 // ==================== 导出功能 ====================

@@ -8,7 +8,46 @@
 
 // ==================== 销售数据 ====================
 Sale *g_pending_sales = NULL;  // 挂单列表
-static SaleItem *g_sale_items = NULL;
+SaleItem *g_sale_items = NULL;  // 改为非static，供main.c清理用
+
+/**
+ * 清理指定收银员的挂单及其销售明细（供logout调用）
+ */
+void cleanup_cashier_sales(int cashier_id) {
+    // 先清理关联的SaleItem
+    SaleItem **si_prev = &g_sale_items;
+    while (*si_prev) {
+        // 检查该sale_id是否属于该收银员的挂单
+        Sale *s = g_pending_sales;
+        int belongs = 0;
+        while (s) {
+            if (s->id == (*si_prev)->sale_id && s->cashier_id == cashier_id) {
+                belongs = 1;
+                break;
+            }
+            s = s->next;
+        }
+        if (belongs) {
+            SaleItem *to_free = *si_prev;
+            *si_prev = (*si_prev)->next;
+            free(to_free);
+        } else {
+            si_prev = &(*si_prev)->next;
+        }
+    }
+
+    // 再清理挂单
+    Sale **prev = &g_pending_sales;
+    while (*prev) {
+        if ((*prev)->cashier_id == cashier_id) {
+            Sale *to_free = *prev;
+            *prev = (*prev)->next;
+            free(to_free);
+        } else {
+            prev = &(*prev)->next;
+        }
+    }
+}
 
 // ==================== 销售记录 ====================
 
@@ -99,30 +138,55 @@ float calculate_sale_total(int sale_id) {
 /**
  * 完成销售（收银）
  * 原子性操作：扣库存 + 写销售记录
- * @param sale_id 订单号
- * @param payment_method 支付方式
- * @param discount 额外折扣百分比（0-100），由收银员手动输入的额外折扣
- * @param cash_received 实收金额（仅现金支付时使用）
+ *
+ * 折扣说明：
+ *   - 单品促销折扣：已在 scan_and_sell 时写入 item.price（折后价）
+ *   - 会员/VIP折扣：通过 discount_pct 百分比参数传入
+ *   - 满减/抹零：通过 discount_amount 固定金额参数传入
+ *
+ * @param sale_id          订单号
+ * @param payment_method   支付方式
+ * @param discount_pct     会员/VIP折扣百分比（0-100）
+ * @param discount_amount  满减/固定金额优惠
+ * @param cash_received    实收金额（仅现金支付时使用）
  * @return 0成功，-1失败
  */
-int complete_sale(int sale_id, const char *payment_method, float discount, float cash_received) {
+int complete_sale(int sale_id, const char *payment_method,
+                  float discount_pct, float discount_amount, float cash_received) {
     Sale *sale = find_pending_sale(sale_id);
     if (!sale) return -1;
-    
-    // 计算总额（已包含单品折扣）
-    float total = calculate_sale_total(sale_id);
-    
-    // 计算最终金额：总额 - 已计算的折扣 - 额外手动折扣
-    // 注意：单品折扣和满减已在 scan_and_sell/add_sale_item 时计算到 item->subtotal
-    // 这里只处理收银员手动输入的额外折扣（如抹零等）
-    float extra_discount = 0;
-    if (discount > 0 && discount <= 100) {
-        extra_discount = total * (discount / 100.0f);
+
+    // subtotal = 各商品折后价之和（已含单品促销折扣）
+    float subtotal = calculate_sale_total(sale_id);
+
+    // 计算原价合计（所有商品原始零售价 × 数量）
+    float original_total = 0;
+    float item_promo_discount = 0;  // 单品促销折扣总额
+    int cnt = 0;
+    SaleItem *si = get_sale_items(sale_id, &cnt);
+    for (int i = 0; i < cnt; i++) {
+        float op = si[i].original_price > 0 ? si[i].original_price : si[i].price;
+        original_total += op * si[i].quantity;
+        // 单品促销折扣 = (原价 - 折后价) × 数量
+        item_promo_discount += (op - si[i].price) * si[i].quantity;
     }
-    
-    sale->total_amount = total;
-    sale->discount = extra_discount;
-    sale->final_amount = total - extra_discount;
+    free(si);
+
+    // 应用会员/VIP 百分比折扣（基于已含单品促销折扣后的价格）
+    float pct_off = 0;
+    if (discount_pct > 0 && discount_pct <= 100) {
+        pct_off = subtotal * (discount_pct / 100.0f);
+    }
+
+    // 应用满减等固定金额优惠
+    float fixed_off = discount_amount > 0 ? discount_amount : 0;
+
+    // total_amount = 原价合计（报表中显示的"原价"）
+    sale->total_amount = original_total;
+    // discount = 单品促销折扣 + 会员折扣 + 满减（总优惠金额）
+    sale->discount = item_promo_discount + pct_off + fixed_off;
+    // final_amount = 原价 - 总优惠 = 实收
+    sale->final_amount = original_total - sale->discount;
     sale->cash_received = cash_received;
     
     // 确保最终金额不为负
@@ -166,20 +230,8 @@ int complete_sale(int sale_id, const char *payment_method, float discount, float
     
     // 保存到文件
     save_sale_record(sale);
-    
-    // 从挂单列表移除
-    Sale **prev = &g_pending_sales;
-    while (*prev) {
-        if ((*prev)->id == sale_id) {
-            Sale *to_free = *prev;
-            *prev = (*prev)->next;
-            free(to_free);
-            break;
-        }
-        prev = &(*prev)->next;
-    }
 
-    // 打印小票
+    // 打印小票（必须在释放sale之前完成）
     {
         Receipt receipt;
         memset(&receipt, 0, sizeof(receipt));
@@ -189,9 +241,7 @@ int complete_sale(int sale_id, const char *payment_method, float discount, float
         strncpy(receipt.shop_address, g_config.shop_address, sizeof(receipt.shop_address) - 1);
         strncpy(receipt.shop_phone, g_config.shop_phone, sizeof(receipt.shop_phone) - 1);
 
-        // 收银信息
-        Employee *cashier = find_employee_by_id(sale->cashier_id);
-        // 显示收银员ID而非名字
+        // 收银信息（显示收银员ID）
         snprintf(receipt.cashier, sizeof(receipt.cashier), "%d", sale->cashier_id);
         receipt.receipt_no = sale_id;
         receipt.print_time = time(NULL);
@@ -212,21 +262,22 @@ int complete_sale(int sale_id, const char *payment_method, float discount, float
             if (prod) {
                 strncpy(receipt.items[receipt.item_count].name, prod->name,
                         sizeof(receipt.items[0].name) - 1);
-                receipt.items[receipt.item_count].price = items[i].price;
+                float orig = items[i].original_price > 0 ? items[i].original_price : items[i].price;
+                receipt.items[receipt.item_count].price = orig;
                 receipt.items[receipt.item_count].quantity = items[i].quantity;
-                receipt.items[receipt.item_count].subtotal = items[i].subtotal;
-                receipt.items[receipt.item_count].discount = items[i].discount;
+                receipt.items[receipt.item_count].subtotal = orig * items[i].quantity;
+                receipt.items[receipt.item_count].discount = (orig - items[i].price) * items[i].quantity;
                 receipt.item_count++;
             }
         }
 
         // 金额信息
-        receipt.subtotal = total;
-        receipt.discount = total - sale->final_amount;
+        receipt.subtotal = original_total;
+        receipt.discount = original_total - sale->final_amount;
         receipt.total = sale->final_amount;
 
         // 积分
-        receipt.points_earned = (int)sale->final_amount;  // 1元=1积分
+        receipt.points_earned = calculate_ladder_points(sale->final_amount);
         receipt.points_used = sale->points_used;
 
         // 支付信息
@@ -239,6 +290,23 @@ int complete_sale(int sale_id, const char *payment_method, float discount, float
             // 打印失败时不阻止交易
         }
     }
+
+    // 从挂单列表移除并释放sale（小票打印完成后再释放，避免use-after-free）
+    {
+        Sale **prev = &g_pending_sales;
+        while (*prev) {
+            if ((*prev)->id == sale_id) {
+                Sale *to_free = *prev;
+                *prev = (*prev)->next;
+                free(to_free);
+                break;
+            }
+            prev = &(*prev)->next;
+        }
+    }
+
+    // 重写挂单文件，清理已完成的记录
+    save_all_pending_sales();
 
     // 释放销售明细内存
     free(items);
@@ -262,7 +330,7 @@ int hang_sale(int sale_id) {
 int cancel_sale(int sale_id) {
     Sale *sale = find_pending_sale(sale_id);
     if (!sale) return -1;
-    
+
     // 从挂单列表移除
     Sale **prev = &g_pending_sales;
     while (*prev) {
@@ -272,7 +340,7 @@ int cancel_sale(int sale_id) {
         }
         prev = &(*prev)->next;
     }
-    
+
     // 移除相关销售明细
     SaleItem **item_prev = &g_sale_items;
     while (*item_prev) {
@@ -284,8 +352,12 @@ int cancel_sale(int sale_id) {
             item_prev = &(*item_prev)->next;
         }
     }
-    
+
     free(sale);
+
+    // 重写挂单文件，清理已取消的记录
+    save_all_pending_sales();
+
     return 0;
 }
 
@@ -342,16 +414,62 @@ int load_pending_sales(void) {
 int save_pending_sale(Sale *sale) {
     char filepath[256];
     char content[512];
-    
+
     snprintf(filepath, sizeof(filepath), "%s/pending_sales.txt", DATA_DIR);
-    
+
     snprintf(content, sizeof(content), "%d|%d|%d|%.2f|%.2f|%.2f|%.2f|%d|%s|%d|%lld|%lld",
         sale->id, sale->cashier_id, sale->member_id, sale->total_amount,
         sale->discount, sale->final_amount, sale->cash_received, sale->points_used,
         sale->payment_method, sale->status,
         (long long)sale->created_at, (long long)sale->completed_at);
-    
+
     return atomic_append(filepath, content);
+}
+
+/**
+ * 重写挂单文件（仅保留当前内存中的挂单）
+ * 用于完成销售或取消挂单后清理文件中的过期数据
+ */
+int save_all_pending_sales(void) {
+    char filepath[256];
+    size_t bufsize = 65536;
+    char *buffer = (char*)malloc(bufsize);
+    if (!buffer) return -1;
+    char *pos = buffer;
+    size_t remaining = bufsize;
+
+    snprintf(filepath, sizeof(filepath), "%s/pending_sales.txt", DATA_DIR);
+
+    Sale *sale = g_pending_sales;
+    while (sale) {
+        int written = snprintf(pos, remaining, "%d|%d|%d|%.2f|%.2f|%.2f|%.2f|%d|%s|%d|%lld|%lld\n",
+            sale->id, sale->cashier_id, sale->member_id, sale->total_amount,
+            sale->discount, sale->final_amount, sale->cash_received, sale->points_used,
+            sale->payment_method, sale->status,
+            (long long)sale->created_at, (long long)sale->completed_at);
+
+        if (written >= (int)remaining) {
+            size_t offset = pos - buffer;
+            bufsize *= 2;
+            char *tmp_buf = (char*)realloc(buffer, bufsize);
+            if (!tmp_buf) { free(buffer); return -1; }
+            buffer = tmp_buf;
+            pos = buffer + offset;
+            remaining = bufsize - offset;
+            written = snprintf(pos, remaining, "%d|%d|%d|%.2f|%.2f|%.2f|%.2f|%d|%s|%d|%lld|%lld\n",
+                sale->id, sale->cashier_id, sale->member_id, sale->total_amount,
+                sale->discount, sale->final_amount, sale->cash_received, sale->points_used,
+                sale->payment_method, sale->status,
+                (long long)sale->created_at, (long long)sale->completed_at);
+        }
+        pos += written;
+        remaining -= written;
+        sale = sale->next;
+    }
+
+    int result = atomic_write(filepath, buffer);
+    free(buffer);
+    return result;
 }
 
 /**
@@ -363,8 +481,8 @@ int save_sale_record(Sale *sale) {
     
     snprintf(filepath, sizeof(filepath), "%s/sales.txt", DATA_DIR);
     
-    snprintf(content, sizeof(content), "%d|%d|%.2f|%.2f|%.2f|%s|%d|%lld|%lld",
-        sale->id, sale->cashier_id, sale->total_amount,
+    snprintf(content, sizeof(content), "%d|%d|%d|%.2f|%.2f|%.2f|%s|%d|%lld|%lld",
+        sale->id, sale->cashier_id, sale->member_id, sale->total_amount,
         sale->discount, sale->final_amount, sale->payment_method,
         sale->status, (long long)sale->created_at, (long long)sale->completed_at);
     
@@ -398,6 +516,7 @@ int scan_and_sell(int cashier_id, const char *barcode, int quantity) {
         snprintf(item.product_name, MAX_NAME_LEN, "[套装] %s", combo->name);
         item.quantity = quantity;
         item.price = combo->price;
+        item.original_price = combo->price;
         item.subtotal = combo->price * quantity;
         item.discount = 0;
         item.is_combo = 1;  // 标记为套装
@@ -437,19 +556,20 @@ int scan_and_sell(int cashier_id, const char *barcode, int quantity) {
     strncpy(item.product_name, prod->name, MAX_NAME_LEN - 1);
     item.quantity = quantity;
     item.price = prod->price;
-    
-    // 应用促销折扣（与促销页面逻辑一致）
+    item.original_price = prod->price;
+
+    // 应用单品促销折扣
     Promotion *promo = get_product_promotion(prod->id);
     float discounted_price = prod->price;
     float discount_amount = 0;
-    
+
     if (promo && is_promotion_valid(promo) && promo->type == PROMOTION_TYPE_DISCOUNT) {
         discounted_price = prod->price * promo->discount_rate;
         discount_amount = prod->price - discounted_price;
-        item.price = discounted_price;  // 折后价
+        item.price = discounted_price;  // 折后价（含单品折扣）
     }
-    
-    item.discount = discount_amount;
+
+    item.discount = discount_amount;   // 每件优惠金额
     item.subtotal = item.price * quantity;
     
     add_sale_item(sale_id, &item);

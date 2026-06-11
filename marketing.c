@@ -257,9 +257,9 @@ float redeem_points(Member *member, int points_to_redeem) {
  * 会员消费处理
  */
 void member_consume(Member *member, float amount) {
-    add_points(member, amount);
+    int earned = add_points(member, amount);
     printf("会员 %s 消费 ¥%.2f，获得 %d 积分，当前等级: %s\n",
-           member->name, amount, calculate_ladder_points(amount),
+           member->name, amount, earned,
            get_member_level_name(member->level));
 }
 
@@ -566,57 +566,103 @@ Promotion* get_order_override_promotion(void) {
 }
 
 /**
- * 计算综合折扣信息（包含单品折扣、促销、会员折扣、满减）
- * @param cart 购物车（可选，传入时计算满减）
+ * 计算综合折扣信息（遍历所有商品，支持全部促销类型）
+ * @param cart 购物车
  * @param member 会员（可选）
- * @param product_id 商品ID（用于单品折扣计算）
- * @param quantity 商品数量
  * @return 折扣信息结构
  */
-DiscountInfo calculate_total_discount(Cart *cart, Member *member, const char *product_id, int quantity) {
+DiscountInfo calculate_total_discount(Cart *cart, Member *member) {
     DiscountInfo info;
     memset(&info, 0, sizeof(info));
-    
-    // 1. 计算单品折扣（从促销获取）
-    if (product_id) {
-        Promotion *promo = get_product_promotion(product_id);
-        if (promo && is_promotion_valid(promo)) {
-            info.item_discount_rate = (1.0f - promo->discount_rate) * 100;  // 转成百分比
-            info.has_item_discount = 1;
+
+    if (!cart) return info;
+
+    /* 1. 遍历购物车，计算所有单品级折扣（取每个商品最优） */
+    float item_discount_total = 0;
+    float original_subtotal = 0;
+
+    CartItem *ci = cart->items;
+    while (ci) {
+        float item_original = ci->price * ci->quantity;  // cart 中 price=原价
+        original_subtotal += item_original;
+        float best_discount = 0;
+
+        /* 已在 cart_add_item 中应用的单品折扣 */
+        if (ci->discount_amount > 0) {
+            best_discount = ci->discount_amount * ci->quantity;
         }
+
+        /* 遍历所有促销，找该商品最优折扣 */
+        Promotion *p = g_promotions;
+        while (p) {
+            if (is_promotion_valid(p) && strcmp(p->product_id, ci->product_id) == 0) {
+                float save = 0;
+                switch (p->type) {
+                    case PROMOTION_TYPE_DISCOUNT:
+                        save = ci->price * (1 - p->discount_rate) * ci->quantity;
+                        break;
+                    case PROMOTION_TYPE_NTH_DISCOUNT: {
+                        int eligible = (int)ci->quantity / p->nth_item;
+                        if (eligible > 0)
+                            save = eligible * ci->price * (1 - p->nth_discount_rate);
+                        break;
+                    }
+                    case PROMOTION_TYPE_BUY_M_GET_N: {
+                        int groups = (int)ci->quantity / (p->buy_quantity + p->free_quantity);
+                        if (groups > 0)
+                            save = groups * p->free_quantity * ci->price;
+                        break;
+                    }
+                    case PROMOTION_TYPE_MEMBER_PRICE:
+                        if (p->member_level == 0 ||
+                            (member && get_member_level(member) >= p->member_level)) {
+                            if (p->member_price < ci->price)
+                                save = (ci->price - p->member_price) * ci->quantity;
+                        }
+                        break;
+                }
+                if (save > best_discount) best_discount = save;
+            }
+            p = p->next;
+        }
+
+        item_discount_total += best_discount;
+        if (best_discount > 0) info.has_item_discount = 1;
+        ci = ci->next;
     }
-    
-    // 2. 计算会员折扣
+
+    info.item_discount_rate = original_subtotal > 0
+        ? (item_discount_total / original_subtotal) * 100.0f : 0;
+
+    /* 2. 会员折扣（基于折后小计） */
     if (member) {
         float member_rate = get_member_discount(member);
         if (member_rate < 1.0f) {
+            float after_item = original_subtotal - item_discount_total;
             info.member_discount_rate = (1.0f - member_rate) * 100;
             info.has_member_discount = 1;
+            /* 会员折扣金额（基于折后小计，符合实际业务） */
+            info.total_discount_amount += after_item * (1.0f - member_rate);
         }
     }
-    
-    // 3. 计算满减优惠
-    float subtotal = 0;
-    if (cart) {
-        subtotal = cart_calculate_subtotal(cart);
-    }
+
+    /* 3. 满减优惠（基于折后小计，符合实际业务） */
+    float subtotal_after = original_subtotal - item_discount_total;
     Promotion *override = get_order_override_promotion();
-    if (override && is_promotion_valid(override) && subtotal >= override->threshold) {
+    if (override && is_promotion_valid(override) && subtotal_after >= override->threshold) {
         info.override_discount = override->discount_amount;
         info.has_override = 1;
+        info.total_discount_amount += override->discount_amount;
     }
-    
-    // 4. 计算综合折扣百分比（基于所有折扣来源）
-    // 会员折扣是最基础的
+
+    /* 4. 综合折扣率（用于 UI 显示） */
     info.total_discount_rate = info.member_discount_rate;
-    // 如果单品折扣更大，使用单品折扣
     if (info.item_discount_rate > info.total_discount_rate) {
         info.total_discount_rate = info.item_discount_rate;
     }
-    
-    // 计算总折扣金额
-    info.total_discount_amount = subtotal * (info.total_discount_rate / 100.0f) + info.override_discount;
-    
+
+    info.total_discount_amount += item_discount_total;
+
     return info;
 }
 
@@ -883,10 +929,8 @@ PromotionResult apply_promotions(Cart *cart, Member *member) {
     
     item = cart->items;
     while (item) {
-        float item_original = item->price * item->quantity;
         float item_discount = 0;
-        float final_price = item->price;
-        
+
         Promotion *p = g_promotions;
         while (p) {
             if (is_promotion_valid(p) && strcmp(p->product_id, item->product_id) == 0) {
@@ -895,7 +939,6 @@ PromotionResult apply_promotions(Cart *cart, Member *member) {
                         float save = item->price * (1 - p->discount_rate) * item->quantity;
                         if (save > item_discount) {
                             item_discount = save;
-                            final_price = item->price * p->discount_rate;
                             snprintf(result.detail + strlen(result.detail),
                                     sizeof(result.detail) - strlen(result.detail),
                                     "%s: %.0f折 -¥%.2f\n", 
@@ -939,7 +982,6 @@ PromotionResult apply_promotions(Cart *cart, Member *member) {
                             float save = (item->price - p->member_price) * item->quantity;
                             if (save > 0 && save > item_discount) {
                                 item_discount = save;
-                                final_price = p->member_price;
                                 snprintf(result.detail + strlen(result.detail),
                                         sizeof(result.detail) - strlen(result.detail),
                                         "%s: 会员价¥%.2f -¥%.2f\n", 
@@ -972,9 +1014,10 @@ PromotionResult apply_promotions(Cart *cart, Member *member) {
         }
     }
     
-    cart->subtotal = result.original_amount - result.discount_amount;
+    float after_all_item_and_member = result.original_amount - result.discount_amount;
+    cart->subtotal = after_all_item_and_member;
     Promotion *override = get_order_override_promotion();
-    if (override && cart->subtotal >= override->threshold) {
+    if (override && after_all_item_and_member >= override->threshold) {
         float override_amount = override->discount_amount;
         if (override_amount > 0) {
             result.discount_amount += override_amount;
@@ -1165,17 +1208,20 @@ int create_combo(ProductCombo *combo) {
 int add_combo_item(int combo_id, ComboItem *item) {
     ProductCombo *combo = find_combo_by_id(combo_id);
     if (!combo) return -1;
-    
+
     ComboItem *new_item = (ComboItem*)malloc(sizeof(ComboItem));
     *new_item = *item;
     new_item->next = combo->items;
     combo->items = new_item;
-    
+
     Product *prod = find_product_by_id(item->product_id);
     if (prod) {
         combo->cost += prod->cost * item->quantity;
     }
-    
+
+    // 持久化保存套装子商品
+    save_combo_item(combo_id, new_item);
+
     return 0;
 }
 
@@ -1516,19 +1562,19 @@ int load_all_combo_items(void) {
 }
 
 /**
- * 保存套装子商品
+ * 保存套装子商品（combo_id作为第一字段，与load_all_combo_items一致）
  */
-int save_combo_item(ComboItem *item) {
+int save_combo_item(int combo_id, ComboItem *item) {
     char filepath[256];
     char content[512];
-    
+
     snprintf(filepath, sizeof(filepath), "%s/combo_item.txt", DATA_DIR);
-    
+
     snprintf(content, sizeof(content),
         "%d|%s|%s|%d|%.2f",
-        generate_id(), item->product_id, item->product_name, 
+        combo_id, item->product_id, item->product_name,
         item->quantity, item->ratio);
-    
+
     return atomic_append(filepath, content);
 }
 

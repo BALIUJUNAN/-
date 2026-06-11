@@ -194,16 +194,17 @@ int receive_purchase(int purchase_id, int operator_id) {
     }
     
     free(items);
-    
+
+    // 更新采购订单状态
     pur->status = PURCHASE_COMPLETED;
     pur->completed_at = time(NULL);
-    
+
     char log_data[256];
     snprintf(log_data, sizeof(log_data), "采购订单 #%d 收货完成", purchase_id);
     write_transaction_log("PURCHASE", purchase_id, "COMPLETE", log_data, operator_id);
-    
+
     save_purchase(pur);
-    
+
     return 0;
 }
 

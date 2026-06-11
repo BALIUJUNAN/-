@@ -44,16 +44,18 @@ void calculate_cashier_sales(int cashier_id, time_t start, time_t end,
         char *token;
         char *saveptr;
         
-        // 解析: id|cashier_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
+        // 解析: id|cashier_id|member_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
         token = strtok_r(copy, "|", &saveptr);
         sale.id = token ? atoi(token) : 0;
-        
+
         token = strtok_r(NULL, "|", &saveptr);
         sale.cashier_id = token ? atoi(token) : 0;
-        
+
+        token = strtok_r(NULL, "|", &saveptr);  // member_id（跳过）
+
         token = strtok_r(NULL, "|", &saveptr);
         sale.total_amount = token ? atof(token) : 0.0f;
-        
+
         token = strtok_r(NULL, "|", &saveptr);
         sale.discount = token ? atof(token) : 0.0f;
         
@@ -67,7 +69,7 @@ void calculate_cashier_sales(int cashier_id, time_t start, time_t end,
         sale.status = token ? atoi(token) : 0;
         
         token = strtok_r(NULL, "|", &saveptr);
-        sale.created_at = token ? (time_t)atol(token) : 0;
+        sale.created_at = token ? (time_t)atoll(token) : 0;
         
         // 筛选该收银员在时间段内的已完成订单
         if (sale.cashier_id == cashier_id &&

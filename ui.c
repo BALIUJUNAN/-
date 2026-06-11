@@ -625,8 +625,7 @@ void table_begin(const TableColumn *columns, int col_count) {
 
 void table_draw_header(void) {
     int i;
-    int total_width = 1;  /* 起始边框 */
-    
+
     if (g_table_columns == NULL || g_table_col_count == 0) return;
     
     /* 顶部边框 */
@@ -733,12 +732,11 @@ void table_end(void) {
 void table_draw(const TableColumn *columns, int col_count, const char **rows, int row_count) {
     table_begin(columns, col_count);
     table_draw_header();
-    
-    int row_len = col_count;
+
     for (int i = 0; i < row_count; i++) {
         table_draw_row(rows + i * col_count);
     }
-    
+
     table_end();
 }
 

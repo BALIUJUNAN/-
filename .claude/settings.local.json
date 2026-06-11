@@ -1,12 +1,18 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git checkout *)",
-      "Bash(python3 -c ' *)",
-      "Bash(make clean *)",
+      "Bash(gcc *)",
+      "Bash(dir *)",
+      "Bash(cmd *)",
+      "Bash(./test_report)",
+      "Bash(taskkill //F //IM test_report.exe)",
+      "Bash(grep -v \".txt$\")",
       "Bash(make)",
-      "Bash(gcc main.c supermarket.c marketing.c store_ops.c utility.c sale.c purchase.c schedule.c finance.c report.c ui.c -o supermarket.exe -O2 -Wall -Wextra -std=c99)",
-      "Bash(echo \"Exit code: $?\")"
+      "Bash(echo \"Exit: $?\")",
+      "Bash(make clean *)",
+      "Bash(build.bat)",
+      "Bash(grep -v \"//\")",
+      "Bash(git add *)"
     ]
   }
 }
