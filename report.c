@@ -1,6 +1,21 @@
 /**
  * @file report.c
- * @brief 报表模块 - 销售/库存/采购报表，支持CSV/HTML导出
+ * @brief 报表模块 - 销售/库存/采购/盈亏报表，支持 CSV/HTML 导出
+ *
+ * 本模块提供四类报表：
+ *   1. 销售报表：按时间区间统计订单数、销售额、优惠、支付方式分布
+ *   2. 库存报表：商品库存清单、成本/零售价值、预警统计
+ *   3. 采购报表：按状态分类统计采购订单
+ *   4. 盈亏报告：收入 - 销售成本(COGS) - 固定成本 = 净利润
+ *
+ * 导出格式：
+ *   - 控制台输出（默认）
+ *   - CSV 文件（UTF-8 BOM，Excel 兼容）
+ *   - HTML 文件（带 CSS 样式的表格）
+ *
+ * 盈亏报告的 COGS 计算逻辑：
+ *   从 stock_log.txt 中筛选"出库"记录，
+ *   每条出库记录的成本 = 该商品的进价（优先从采购单历史取，否则用商品表进价）。
  */
 
 #include "supermarket.h"
@@ -434,6 +449,158 @@ void generate_inventory_report(const char *format) {
 // ==================== 采购报表 ====================
 
 /**
+ * 导出库存报表到CSV
+ */
+int export_inventory_csv(const char *filename) {
+    char filepath[256];
+
+    ensure_dir(OUTPUT_DIR);
+    snprintf(filepath, sizeof(filepath), "%s/%s", OUTPUT_DIR, filename);
+
+    FILE *fp = fopen(filepath, "w");
+    if (!fp) {
+        printf("[错误] 无法创建文件: %s\n", filepath);
+        return -1;
+    }
+
+    /* UTF-8 BOM（让 Excel 正确识别中文） */
+    fprintf(fp, "\xEF\xBB\xBF");
+    fprintf(fp, "商品ID,商品名称,条码,库存,最低库存,成本价,零售价,库存成本,库存售价,状态\n");
+
+    int total_products = 0;
+    float total_cost_value = 0;
+    float total_sale_value = 0;
+    int low_stock_count = 0;
+
+    for (int i = 0; i < g_product_hash->size; i++) {
+        HashNode *node = g_product_hash->buckets[i];
+        while (node) {
+            Product *prod = (Product*)node->data;
+            if (prod->status == 1) {
+                total_products++;
+                float item_cost = prod->stock * prod->cost;
+                float item_sale = prod->stock * prod->price;
+                total_cost_value += item_cost;
+                total_sale_value += item_sale;
+
+                const char *status_str = "正常";
+                if (prod->stock <= prod->min_stock) {
+                    status_str = "库存预警";
+                    low_stock_count++;
+                }
+
+                fprintf(fp, "%s,%s,%s,%d,%d,%.2f,%.2f,%.2f,%.2f,%s\n",
+                        prod->id, prod->name, prod->barcode,
+                        prod->stock, prod->min_stock,
+                        prod->cost, prod->price,
+                        item_cost, item_sale, status_str);
+            }
+            node = node->next;
+        }
+    }
+
+    /* 汇总行 */
+    fprintf(fp, "\n汇总,,,,,,,\n");
+    fprintf(fp, "商品总数,%d\n", total_products);
+    fprintf(fp, "库存预警商品,%d\n", low_stock_count);
+    fprintf(fp, "成本总额,,%.2f\n", total_cost_value);
+    fprintf(fp, "零售总额,,%.2f\n", total_sale_value);
+
+    fclose(fp);
+    printf("库存报表已导出: %s\n", filepath);
+    return 0;
+}
+
+/**
+ * 导出库存报表到HTML
+ */
+int export_inventory_html(const char *filename) {
+    char filepath[256];
+
+    ensure_dir(OUTPUT_DIR);
+    snprintf(filepath, sizeof(filepath), "%s/%s", OUTPUT_DIR, filename);
+
+    FILE *fp = fopen(filepath, "w");
+    if (!fp) {
+        printf("[错误] 无法创建文件: %s\n", filepath);
+        return -1;
+    }
+
+    fprintf(fp, "<!DOCTYPE html>\n<html>\n<head>\n");
+    fprintf(fp, "<meta charset=\"UTF-8\">\n");
+    fprintf(fp, "<title>库存报表</title>\n");
+    fprintf(fp, "<style>\n");
+    fprintf(fp, "body { font-family: Arial, sans-serif; margin: 20px; }\n");
+    fprintf(fp, "table { border-collapse: collapse; width: 100%%; }\n");
+    fprintf(fp, "th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }\n");
+    fprintf(fp, "th { background-color: #2196F3; color: white; }\n");
+    fprintf(fp, "tr:nth-child(even) { background-color: #f2f2f2; }\n");
+    fprintf(fp, ".warning { background-color: #fff3cd; color: #856404; font-weight: bold; }\n");
+    fprintf(fp, ".summary { margin: 20px 0; font-size: 18px; }\n");
+    fprintf(fp, "</style>\n</head>\n<body>\n");
+
+    fprintf(fp, "<h1>库存报表</h1>\n");
+
+    time_t now = time(NULL);
+    char time_str[32];
+    format_time(now, time_str);
+    fprintf(fp, "<p>生成时间: %s</p>\n", time_str);
+
+    fprintf(fp, "<table>\n");
+    fprintf(fp, "<tr><th>商品ID</th><th>商品名称</th><th>条码</th>"
+               "<th>库存</th><th>最低库存</th><th>成本价</th>"
+               "<th>零售价</th><th>库存成本</th><th>库存售价</th><th>状态</th></tr>\n");
+
+    int total_products = 0;
+    float total_cost_value = 0;
+    float total_sale_value = 0;
+    int low_stock_count = 0;
+
+    for (int i = 0; i < g_product_hash->size; i++) {
+        HashNode *node = g_product_hash->buckets[i];
+        while (node) {
+            Product *prod = (Product*)node->data;
+            if (prod->status == 1) {
+                total_products++;
+                float item_cost = prod->stock * prod->cost;
+                float item_sale = prod->stock * prod->price;
+                total_cost_value += item_cost;
+                total_sale_value += item_sale;
+
+                int is_low = (prod->stock <= prod->min_stock);
+                if (is_low) low_stock_count++;
+
+                fprintf(fp, "<tr%s><td>%s</td><td>%s</td><td>%s</td>"
+                           "<td>%d</td><td>%d</td><td>¥%.2f</td>"
+                           "<td>¥%.2f</td><td>¥%.2f</td><td>¥%.2f</td>"
+                           "<td>%s</td></tr>\n",
+                        is_low ? " class=\"warning\"" : "",
+                        prod->id, prod->name, prod->barcode,
+                        prod->stock, prod->min_stock,
+                        prod->cost, prod->price,
+                        item_cost, item_sale,
+                        is_low ? "⚠ 库存预警" : "正常");
+            }
+            node = node->next;
+        }
+    }
+
+    fprintf(fp, "</table>\n");
+
+    fprintf(fp, "<div class=\"summary\">\n");
+    fprintf(fp, "<p>商品总数: <strong>%d</strong></p>\n", total_products);
+    fprintf(fp, "<p>库存预警商品: <strong>%d</strong></p>\n", low_stock_count);
+    fprintf(fp, "<p>成本总额: <strong>¥%.2f</strong></p>\n", total_cost_value);
+    fprintf(fp, "<p>零售总额: <strong>¥%.2f</strong></p>\n", total_sale_value);
+    fprintf(fp, "</div>\n");
+    fprintf(fp, "</body>\n</html>\n");
+
+    fclose(fp);
+    printf("库存报表已导出: %s\n", filepath);
+    return 0;
+}
+
+/**
  * 生成采购报表
  */
 void generate_purchase_report(time_t start, time_t end, const char *format) {
@@ -697,12 +864,12 @@ void handle_export(int choice) {
             export_sales_html(range.start, range.end, filename);
             break;
         case 3:
-            // 库存报表CSV
-            printf("库存报表CSV导出功能\n");
+            snprintf(filename, sizeof(filename), "inventory_report_%lld.csv", (long long)time(NULL));
+            export_inventory_csv(filename);
             break;
         case 4:
-            // 库存报表HTML
-            printf("库存报表HTML导出功能\n");
+            snprintf(filename, sizeof(filename), "inventory_report_%lld.html", (long long)time(NULL));
+            export_inventory_html(filename);
             break;
         default:
             printf("无效选择\n");

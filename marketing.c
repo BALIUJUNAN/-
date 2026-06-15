@@ -1,20 +1,53 @@
 /**
  * @file marketing.c
- * @brief 营销模块合并文件
- * 
- * 合并了以下模块：
- * - 会员管理 (member)
- * - 促销管理 (promotion)
- * - 套装管理 (combo)
- * - 批次管理 (batch)
- * - 储值卡管理 (vipcard)
+ * @brief 营销模块合并文件（5个子模块）
+ *
+ * 本文件合并了 5 个业务子模块：
+ *
+ * ┌─────────────────────────────────────────────────────────────────────┐
+ * │ 1. 会员管理 (member)                                                │
+ * │    - 会员注册/查询/编辑/删除                                         │
+ * │    - 积分系统：阶梯积分（消费越多倍率越高）、积分兑换现金               │
+ * │    - 等级系统：普通→银卡(≥1000)→金卡(≥5000)→钻石(≥20000)            │
+ * │    - 等级自动升级（基于累计消费金额）                                  │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 2. 促销管理 (promotion)                                             │
+ * │    - 5种促销类型：单品折扣/满减/第N件优惠/买M赠N/会员专属价            │
+ * │    - 促销按优先级排序，同一商品取最优折扣                              │
+ * │    - 综合折扣计算：单品促销 → 会员折扣 → 满减，三层叠加               │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 3. 套装管理 (combo)                                                 │
+ * │    - 套装 = 多个子商品的捆绑销售（独立条码、独立定价）                  │
+ * │    - 销售时自动按比例扣减子商品库存                                    │
+ * │    - 退款时自动回滚子商品库存                                         │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 4. 批次管理 (batch)                                                 │
+ * │    - 按收货日期管理商品批次（YYMMDD+序号 批号）                        │
+ * │    - 先进先出(FIFO)库存扣减                                          │
+ * │    - 临期预警（保质期≤30天自动提醒）                                  │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 5. 储值卡管理 (vipcard)                                             │
+ * │    - 储值卡创建/充值/消费/退款                                        │
+ * │    - 支付密码验证（SHA-256 哈希）                                     │
+ * │    - 绑定会员、冻结/解冻/注销                                         │
+ * │    - 交易记录查询和对账单生成                                         │
+ * └─────────────────────────────────────────────────────────────────────┘
+ *
+ * 数据存储：
+ *   member.txt         — 会员主表
+ *   promotion.txt      — 促销活动表
+ *   combo.txt          — 套装主表
+ *   combo_item.txt     — 套装子商品表
+ *   batch.txt          — 批次表
+ *   vipcard.txt        — 储值卡表
+ *   vipcard_trans.txt  — 储值卡交易记录表
  */
 
 #include "supermarket.h"
 
 // ==================== 会员模块 ====================
 
-static VipCardTransaction *g_vip_card_transactions = NULL;
+static VipCardTransaction *g_vip_card_transactions = NULL;  // 储值卡交易记录链表
 
 /**
  * 添加会员
@@ -191,31 +224,44 @@ void upgrade_member_level(Member *member) {
  * 增加积分
  */
 /**
- * 计算阶梯积分
- * 100元以下：1元=1积分
- * 100-500元：1元=2积分
- * 500-1000元：1元=3积分
- * 1000元以上：1元=5积分
+ * 计算阶梯积分（分段累加制度）
+ *
+ * 阶梯规则：
+ *   0 ~ 100 元：  每1元 = 1积分  (基础倍率)
+ *   100 ~ 500 元：每1元 = 2积分  (一阶倍率)
+ *   500 ~ 1000元：每1元 = 3积分  (二阶倍率)
+ *   1000元以上：  每1元 = 5积分  (三阶倍率)
+ *
+ * 例：消费800元 = 100×1 + 400×2 + 300×3 = 100+800+900 = 1800积分
+ *
+ * @param amount 消费金额
+ * @return 获得的积分数
  */
 int calculate_ladder_points(float amount) {
     int points = 0;
-    
-    if (amount >= POINTS_THRESHOLD_1000) {
-        // 1000元以上：全部按5倍积分
-        points = (int)(amount * POINTS_PER_YUAN_LEVEL3);
-    } else if (amount >= POINTS_THRESHOLD_500) {
-        // 500-1000元：前500元按3倍，后面的按5倍
-        points = (int)(POINTS_THRESHOLD_500 * POINTS_PER_YUAN_LEVEL2);
-        points += (int)((amount - POINTS_THRESHOLD_500) * POINTS_PER_YUAN_LEVEL3);
-    } else if (amount >= POINTS_THRESHOLD_100) {
-        // 100-500元：前100元按2倍，后面的按3倍
-        points = (int)(POINTS_THRESHOLD_100 * POINTS_PER_YUAN_LEVEL1);
-        points += (int)((amount - POINTS_THRESHOLD_100) * POINTS_PER_YUAN_LEVEL2);
-    } else {
-        // 100元以下：按基础积分
+
+    if (amount <= 0) return 0;
+
+    if (amount <= POINTS_THRESHOLD_100) {
+        /* 0~100元：1元=1积分 */
         points = (int)(amount * POINTS_PER_YUAN_BASE);
+    } else if (amount <= POINTS_THRESHOLD_500) {
+        /* 100~500元：前100元按1倍，超出部分按2倍 */
+        points = (int)(POINTS_THRESHOLD_100 * POINTS_PER_YUAN_BASE);
+        points += (int)((amount - POINTS_THRESHOLD_100) * POINTS_PER_YUAN_LEVEL1);
+    } else if (amount <= POINTS_THRESHOLD_1000) {
+        /* 500~1000元：前100元1倍 + 100~500元2倍 + 超出部分3倍 */
+        points = (int)(POINTS_THRESHOLD_100 * POINTS_PER_YUAN_BASE);
+        points += (int)((POINTS_THRESHOLD_500 - POINTS_THRESHOLD_100) * POINTS_PER_YUAN_LEVEL1);
+        points += (int)((amount - POINTS_THRESHOLD_500) * POINTS_PER_YUAN_LEVEL2);
+    } else {
+        /* 1000元以上：前100元1倍 + 100~500元2倍 + 500~1000元3倍 + 超出部分5倍 */
+        points = (int)(POINTS_THRESHOLD_100 * POINTS_PER_YUAN_BASE);
+        points += (int)((POINTS_THRESHOLD_500 - POINTS_THRESHOLD_100) * POINTS_PER_YUAN_LEVEL1);
+        points += (int)((POINTS_THRESHOLD_1000 - POINTS_THRESHOLD_500) * POINTS_PER_YUAN_LEVEL2);
+        points += (int)((amount - POINTS_THRESHOLD_1000) * POINTS_PER_YUAN_LEVEL3);
     }
-    
+
     return points;
 }
 
@@ -1425,20 +1471,28 @@ int load_combos(void) {
     while (fgets(line, sizeof(line), fp)) {
         trim(line);
         if (strlen(line) == 0) continue;
-        
+
         ProductCombo *combo = (ProductCombo*)malloc(sizeof(ProductCombo));
         memset(combo, 0, sizeof(ProductCombo));
-        
+
         char *saveptr;
-        char *token = strtok_r(line, "|", &saveptr);
-        combo->id = atoi(token);
-        strncpy(combo->name, strtok_r(NULL, "|", &saveptr), 99);
-        strncpy(combo->barcode, strtok_r(NULL, "|", &saveptr), 29);
-        combo->price = atof(strtok_r(NULL, "|", &saveptr));
-        combo->cost = atof(strtok_r(NULL, "|", &saveptr));
-        combo->status = atoi(strtok_r(NULL, "|", &saveptr));
-        combo->created_at = (time_t)atoll(strtok_r(NULL, "|", &saveptr));
-        combo->updated_at = (time_t)atoll(strtok_r(NULL, "|", &saveptr));
+        char *token;
+        token = strtok_r(line, "|", &saveptr);
+        combo->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr);
+        strncpy(combo->name, token ? token : "", 99);
+        token = strtok_r(NULL, "|", &saveptr);
+        strncpy(combo->barcode, token ? token : "", 29);
+        token = strtok_r(NULL, "|", &saveptr);
+        combo->price = token ? atof(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr);
+        combo->cost = token ? atof(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr);
+        combo->status = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr);
+        combo->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr);
+        combo->updated_at = token ? (time_t)atoll(token) : 0;
         
         combo->next = g_combos;
         g_combos = combo;

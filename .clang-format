@@ -1,0 +1,31 @@
+# Clang-Format 配置文件 - C 代码风格
+BasedOnStyle: LLVM
+
+# 缩进设置
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# 花括号风格
+BreakBeforeBraces: Allman
+
+# 行宽限制
+ColumnLimit: 100
+
+# 函数参数对齐
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: true
+AlignConsecutiveDeclarations: true
+
+# 空格设置
+SpaceBeforeParens: ControlStatements
+SpacesInParentheses: false
+
+# 指针对齐
+PointerAlignment: Right
+
+# include 排序
+SortIncludes: true
+
+# switch case 缩进
+IndentCaseLabels: true

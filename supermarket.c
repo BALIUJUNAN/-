@@ -1,6 +1,18 @@
 /**
  * @file supermarket.c
  * @brief 超市管理系统核心实现 - 数据访问层、哈希表、文件IO
+ *
+ * 本文件是整个系统的基础设施层，负责：
+ *   1. 哈希表数据结构实现（djb2 算法 + 链表法解决冲突）
+ *   2. 文件IO操作（原子写入、文件锁、行读取）
+ *   3. 工具函数（trim、SHA-256密码哈希、时间戳、ID生成）
+ *   4. 员工/商品/供应商 的 CRUD 操作和持久化
+ *   5. 系统初始化和资源清理
+ *
+ * 数据持久化策略：
+ *   - 全量覆盖：atomic_write（临时文件 + rename，用于 save_all_xxx）
+ *   - 原子追加：atomic_append（带锁的 append 模式，用于单条记录写入）
+ *   - 所有数据文件存储在 data/ 目录下，以 | 分隔的纯文本格式
  */
 
 #include "supermarket.h"
@@ -12,28 +24,53 @@
 #endif
 
 // ==================== 全局变量定义 ====================
-int g_auto_id_counter = 0;  // 从1开始自增（初始为0，首次++后为1），会根据已加载数据动态更新
-int g_sale_order_counter = 0;  // 销售订单专用计数器（初始为0，首次++后为1）
-int g_member_id_counter = 0;    // 会员ID专用计数器，从1开始，每次+1（初始为0，首次++后为1）
-int g_employee_id_counter = 0;  // 员工ID专用计数器，从1开始自增
+
+/*
+ * ID 计数器设计说明：
+ *   每类实体有独立的自增计数器，确保 ID 在各自范围内唯一。
+ *   初始值均为 0，首次 ++ 后变为 1（从 1 开始）。
+ *   启动时通过 load_xxx() 从文件加载数据，自动将计数器更新为历史最大值，
+ *   保证重启后新 ID 不会与已有数据冲突。
+ */
+int g_auto_id_counter = 0;       // 通用自增计数器（供应商等辅助实体使用）
+int g_sale_order_counter = 0;    // 销售订单专用计数器（格式：纯数字 1,2,3...）
+int g_member_id_counter = 0;     // 会员ID专用计数器（格式：纯数字）
+int g_employee_id_counter = 0;   // 员工ID专用计数器（格式：纯数字）
+int g_product_id_counter = 0;    // 商品ID专用计数器（格式：P0001, P0002...）
+int g_transfer_id_counter = 0;   // 调拨单专用计数器（格式：纯数字 1,2,3...）
+
+/*
+ * 哈希表全局变量：
+ *   g_employee_hash   — 员工表（key=员工ID字符串，value=Employee*）
+ *   g_product_hash    — 商品表（key=商品ID字符串，value=Product*）
+ *   g_barcode_hash    — 条码索引表（key=条码字符串，value=Product*，与 g_product_hash 共享同一对象）
+ *   g_supplier_hash   — 供应商表（key=供应商ID字符串，value=Supplier*）
+ *   g_member_phone_hash — 会员手机号索引表（key=手机号，value=Member*，与 g_members 链表共享对象）
+ */
 static HashTable *g_employee_hash = NULL;
 HashTable *g_product_hash = NULL;
 static HashTable *g_barcode_hash = NULL;
 static HashTable *g_supplier_hash = NULL;
-HashTable *g_member_phone_hash = NULL;  // 会员手机号哈希表
-Member *g_members = NULL;  // 会员链表头指针
+HashTable *g_member_phone_hash = NULL;
+Member *g_members = NULL;  // 会员链表头指针（与 g_member_phone_hash 共享 Member 对象）
 
-// 营销模块全局变量
-ProductCombo *g_combos = NULL;
-HashTable *g_combo_barcode_hash = NULL;
-Batch *g_batches = NULL;
-Promotion *g_promotions = NULL;
-VipCard *g_vip_cards = NULL;
+// 营销模块全局变量（套装/批次/促销/储值卡均为链表结构）
+ProductCombo *g_combos = NULL;           // 套装链表
+HashTable *g_combo_barcode_hash = NULL;  // 套装条码索引表
+Batch *g_batches = NULL;                 // 批次链表（按收货日期排序）
+Promotion *g_promotions = NULL;          // 促销链表（按优先级排序）
+VipCard *g_vip_cards = NULL;             // 储值卡链表
 
 // ==================== 哈希表实现 ====================
 
 /**
  * 创建哈希表
+ *
+ * 分配 HashTable 结构体和桶数组（calloc 初始化为 NULL）。
+ * 使用质数作为桶数量（如 10007）可减少哈希冲突。
+ *
+ * @param size  桶的数量（建议使用质数，如 HASH_TABLE_SIZE=10007）
+ * @return 哈希表指针，失败返回 NULL
  */
 HashTable* hash_create(int size) {
     HashTable *ht = (HashTable*)malloc(sizeof(HashTable));
@@ -41,6 +78,7 @@ HashTable* hash_create(int size) {
         fprintf(stderr, "分配哈希表结构失败\n");
         return NULL;
     }
+    /* calloc 将所有桶初始化为 NULL（空链表头） */
     ht->buckets = (HashNode**)calloc(size, sizeof(HashNode*));
     if (!ht->buckets) {
         fprintf(stderr, "分配哈希表桶失败\n");
@@ -52,52 +90,74 @@ HashTable* hash_create(int size) {
 }
 
 /**
- * 简单哈希函数（使用 djb2 算法）
+ * djb2 哈希函数
+ *
+ * 经典的字符串哈希算法，由 Daniel J. Bernstein 提出。
+ * 核心公式：hash = hash * 33 + c，对每个字符迭代计算。
+ * 初始种子 5381 是经验值，能产生良好的分布效果。
+ *
+ * @param key   待哈希的字符串
+ * @param size  桶的数量（取模用）
+ * @return 哈希值（桶索引，范围 [0, size)）
  */
 static unsigned int simple_hash(const char *key, int size) {
     unsigned int hash = 5381;
     int c;
     while ((c = *key++)) {
-        hash = ((hash << 5) + hash) + c;  // hash * 33 + c
+        hash = ((hash << 5) + hash) + c;  /* 等价于 hash * 33 + c，位运算更快 */
     }
     return hash % size;
 }
 
 /**
- * 插入哈希表（检测重复key，已存在则更新data）
+ * 向哈希表插入键值对
+ *
+ * 使用链表法处理冲突：新节点头插到对应桶的链表头部（O(1)）。
+ * 如果 key 已存在，则更新其关联的 data 指针（不创建重复节点）。
+ *
+ * @param table  哈希表指针
+ * @param key    键（字符串，最长 63 字节）
+ * @param data   值（void*，通常是指向结构体的指针）
+ * @return 0 成功，-1 内存分配失败
  */
 int hash_insert(HashTable *table, const char *key, void *data) {
     unsigned int index = simple_hash(key, table->size);
 
-    // 检查是否已存在相同key
+    /* 检查是否已存在相同 key（遍历桶内链表） */
     HashNode *node = table->buckets[index];
     while (node) {
         if (strcmp(node->key, key) == 0) {
-            node->data = data;  // 更新已有节点
+            node->data = data;  /* key 已存在，仅更新 data */
             return 0;
         }
         node = node->next;
     }
 
+    /* key 不存在，创建新节点并头插到链表 */
     HashNode *new_node = (HashNode*)malloc(sizeof(HashNode));
     if (!new_node) return -1;
 
     strncpy(new_node->key, key, 63);
     new_node->key[63] = '\0';
     new_node->data = data;
-    new_node->next = table->buckets[index];
-    table->buckets[index] = new_node;
+    new_node->next = table->buckets[index];  /* 新节点指向原链表头 */
+    table->buckets[index] = new_node;        /* 桶头指向新节点 */
 
     return 0;
 }
 
 /**
- * 查找哈希表
+ * 在哈希表中查找指定 key
+ *
+ * 计算哈希值定位桶，然后遍历桶内链表逐一比较 key。
+ * 平均时间复杂度 O(1)，最坏 O(n)（所有 key 冲突到同一桶）。
+ *
+ * @param table  哈希表指针
+ * @param key    待查找的键
+ * @return 关联的 data 指针，未找到返回 NULL
  */
 void* hash_search(HashTable *table, const char *key) {
-    if (!table || !key) {
-        return NULL;
-    }
+    if (!table || !key) return NULL;
 
     unsigned int index = simple_hash(key, table->size);
     HashNode *node = table->buckets[index];
@@ -112,7 +172,14 @@ void* hash_search(HashTable *table, const char *key) {
 }
 
 /**
- * 删除哈希表项
+ * 从哈希表中删除指定 key
+ *
+ * 遍历桶内链表，找到目标节点后将其从链表中摘除并释放内存。
+ * 使用 prev 指针维护前驱节点，实现单链表的删除操作。
+ *
+ * @param table  哈希表指针
+ * @param key    待删除的键
+ * @return 0 成功，-1 未找到该 key
  */
 int hash_delete(HashTable *table, const char *key) {
     unsigned int index = simple_hash(key, table->size);
@@ -122,9 +189,9 @@ int hash_delete(HashTable *table, const char *key) {
     while (node) {
         if (strcmp(node->key, key) == 0) {
             if (prev) {
-                prev->next = node->next;
+                prev->next = node->next;   /* 删除中间/末尾节点 */
             } else {
-                table->buckets[index] = node->next;
+                table->buckets[index] = node->next;  /* 删除链表头节点 */
             }
             free(node);
             return 0;
@@ -132,11 +199,17 @@ int hash_delete(HashTable *table, const char *key) {
         prev = node;
         node = node->next;
     }
-    return -1;
+    return -1;  /* 未找到 */
 }
 
 /**
- * 销毁哈希表
+ * 销毁整个哈希表，释放所有内存
+ *
+ * 遍历每个桶的链表，依次释放节点和关联数据（如果提供了 free_data 回调），
+ * 最后释放桶数组和哈希表结构体本身。
+ *
+ * @param table      哈希表指针
+ * @param free_data  释放 data 的回调函数（传 NULL 表示不释放 data）
  */
 void hash_destroy(HashTable *table, void (*free_data)(void*)) {
     if (!table) return;
@@ -145,14 +218,14 @@ void hash_destroy(HashTable *table, void (*free_data)(void*)) {
         while (node) {
             HashNode *next = node->next;
             if (free_data && node->data) {
-                free_data(node->data);
+                free_data(node->data);  /* 释放 data 指向的对象 */
             }
-            free(node);
+            free(node);  /* 释放节点本身 */
             node = next;
         }
     }
-    free(table->buckets);
-    free(table);
+    free(table->buckets);  /* 释放桶数组 */
+    free(table);           /* 释放哈希表结构体 */
 }
 
 // ==================== 文件IO操作 ====================
@@ -169,13 +242,20 @@ static int ensure_dir(const char *dir) {
 }
 
 /**
- * 文件加锁（Windows 实现）
+ * 文件加锁/解锁（跨平台实现）
+ *
+ * 通过文件锁防止多进程同时写入同一文件导致数据损坏。
+ * Windows: 使用 LockFileEx/UnlockFileEx（排他锁）
+ * Linux:   使用 flock（LOCK_EX 排他锁 / LOCK_UN 解锁）
+ *
+ * @param fp        文件指针
+ * @param operation LOCKFILE_LOCK=加锁, LOCKFILE_UNLOCK=解锁
+ * @return 0 成功，-1 失败
  */
 #ifdef _WIN32
 int file_lock(FILE *fp, int operation) {
     HANDLE hFile = (HANDLE)_get_osfhandle(_fileno(fp));
     OVERLAPPED ovlp = {0};
-    
     if (operation == LOCKFILE_LOCK) {
         return LockFileEx(hFile, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &ovlp) ? 0 : -1;
     } else {
@@ -222,9 +302,24 @@ static int FileExists(const char *path) {
 #endif
 
 /**
- * 原子写入（临时文件 + rename）
- * 流程：创建.tmp → 写入 → fflush → fsync → rename → 失败时删除.tmp
- * 适用于全量覆盖写入
+ * 原子写入（全量覆盖）
+ *
+ * 核心思路：先写入临时文件，确认数据落盘后再用 rename 原子替换原文件。
+ * 这样即使在写入过程中断电/崩溃，原文件也不会损坏（要么是旧数据，要么是新数据）。
+ *
+ * 流程：
+ *   1. 创建 filepath.tmp 临时文件
+ *   2. 写入全部数据
+ *   3. fflush + fsync 确保数据从内核缓冲区写入物理磁盘
+ *   4. 关闭文件
+ *   5. Windows: 先删除原文件，再 rename；Linux: 直接 rename（原子操作）
+ *   6. 任何步骤失败都删除 .tmp 文件，不留下垃圾
+ *
+ * 适用场景：save_employees()、save_products() 等全量覆盖写入
+ *
+ * @param filepath  目标文件路径
+ * @param content   要写入的全部内容（字符串）
+ * @return 0 成功，-1 失败
  */
 int atomic_write(const char *filepath, const char *content) {
     char tmppath[512];
@@ -274,8 +369,15 @@ int atomic_write(const char *filepath, const char *content) {
 }
 
 /**
- * 原子追加写入（追加模式）
- * 使用文件锁 + append 模式，O(1) 追加
+ * 原子追加写入（单条记录）
+ *
+ * 与 atomic_write（全量覆盖）不同，此函数以 append 模式追加一行数据。
+ * 使用文件锁防止多进程同时追加导致数据交错。
+ * 适用于 save_purchase_item()、save_stock_log() 等单条记录写入场景。
+ *
+ * @param filepath  目标文件路径
+ * @param content   要追加的一行内容（自动添加换行符）
+ * @return 0 成功，-1 失败
  */
 int atomic_append(const char *filepath, const char *content) {
     FILE *fp = fopen(filepath, "a");
@@ -296,6 +398,14 @@ int atomic_append(const char *filepath, const char *content) {
 
 /**
  * 读取文件所有行到动态数组
+ *
+ * 逐行读取文件内容，每行复制到独立的堆内存中（strdup）。
+ * 使用动态扩容策略（初始 100 行，不够时容量翻倍）。
+ * 调用方使用完后必须调用 free_lines() 释放内存。
+ *
+ * @param filepath  文件路径
+ * @param count     [out] 读取到的行数
+ * @return 行字符串数组（每行一个 char*），文件不存在返回 NULL
  */
 char** read_lines(const char *filepath, int *count) {
     FILE *fp = fopen(filepath, "r");
@@ -303,30 +413,36 @@ char** read_lines(const char *filepath, int *count) {
         *count = 0;
         return NULL;
     }
-    
+
     char **lines = NULL;
     char buffer[MAX_LINE_LEN];
-    int capacity = 100;
+    int capacity = 100;   /* 初始容量 */
     int size = 0;
-    
+
     lines = (char**)malloc(capacity * sizeof(char*));
-    
+
     while (fgets(buffer, sizeof(buffer), fp)) {
+        /* 容量不足时翻倍扩容 */
         if (size >= capacity) {
             capacity *= 2;
             lines = (char**)realloc(lines, capacity * sizeof(char*));
         }
-        lines[size] = strdup(buffer);
+        lines[size] = strdup(buffer);  /* 复制一行到堆内存 */
         size++;
     }
-    
+
     fclose(fp);
     *count = size;
     return lines;
 }
 
 /**
- * 释放行数组
+ * 释放 read_lines 返回的行数组
+ *
+ * 逐行释放 strdup 分配的内存，最后释放数组本身。
+ *
+ * @param lines  read_lines 返回的数组
+ * @param count  行数
  */
 void free_lines(char **lines, int count) {
     for (int i = 0; i < count; i++) {
@@ -338,22 +454,30 @@ void free_lines(char **lines, int count) {
 // ==================== 工具函数 ====================
 
 /**
- * 去除字符串首尾空白
+ * 去除字符串首尾空白字符（原地修改）
+ *
+ * 处理步骤：
+ *   1. 跳过开头的空白字符（空格、制表符、换行等）
+ *   2. 用 memmove 将有效内容移到缓冲区开头（memmove 处理重叠区域）
+ *   3. 从末尾向前扫描，将尾部空白替换为 '\0'
+ *
+ * @param str  待处理的字符串（会被原地修改）
+ * @return 处理后的字符串指针（与输入相同）
  */
 char* trim(char *str) {
     if (!str) return str;
 
-    // 去除首部空白（用memmove将内容移到缓冲区开头）
+    /* 去除首部空白：找到第一个非空白字符的位置 */
     char *start = str;
     while (isspace((unsigned char)*start)) start++;
     if (start != str) {
         size_t len = strlen(start);
-        memmove(str, start, len + 1);  // +1 包含 '\0'
+        memmove(str, start, len + 1);  /* +1 包含 '\0' 终止符 */
     }
 
     if (*str == '\0') return str;
 
-    // 去除尾部空白
+    /* 去除尾部空白：从末尾向前找到最后一个非空白字符 */
     char *end = str + strlen(str) - 1;
     while (end > str && isspace((unsigned char)*end)) end--;
     *(end + 1) = '\0';
@@ -362,11 +486,17 @@ char* trim(char *str) {
 }
 
 /**
- * 生成随机盐值
+ * 生成 32 字节随机盐值
+ *
+ * 盐值用于密码哈希：SHA-256(salt + password)。
+ * 即使两个用户使用相同密码，由于盐值不同，哈希结果也不同，
+ * 从而防止彩虹表攻击。
+ *
+ * @param salt  [out] 输出缓冲区（至少 33 字节）
+ * @return salt 指针
  */
 char* generate_salt(char *salt) {
     static const char charset[] = "0123456789abcdefghijklmnopqrstuvwxyz";
-
     for (int i = 0; i < 32; i++) {
         salt[i] = charset[rand() % 36];
     }
@@ -375,14 +505,29 @@ char* generate_salt(char *salt) {
 }
 
 // ==================== SHA-256 实现 ====================
+/*
+ * SHA-256 安全哈希算法
+ *
+ * 将任意长度的输入映射为 256 位（32 字节）的哈希值。
+ * 用于密码存储：不保存明文密码，只保存 SHA-256(salt + password) 的十六进制字符串。
+ *
+ * 算法核心：
+ *   1. 消息分组（512 位 = 64 字节一组）
+ *   2. 每组进行 64 轮压缩运算
+ *   3. 使用 8 个 32 位寄存器 (a-h) 作为中间状态
+ *   4. 最终输出 256 位哈希值
+ *
+ * 安全性：单向不可逆，抗碰撞，适合密码存储场景。
+ */
 
-#define ROTRIGHT(a,b) (((a) >> (b)) | ((a) << (32-(b))))
-#define CH(x,y,z) (((x) & (y)) ^ (~(x) & (z)))
-#define MAJ(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
-#define EP0(x) (ROTRIGHT(x,2) ^ ROTRIGHT(x,13) ^ ROTRIGHT(x,22))
-#define EP1(x) (ROTRIGHT(x,6) ^ ROTRIGHT(x,11) ^ ROTRIGHT(x,25))
-#define SIG0(x) (ROTRIGHT(x,7) ^ ROTRIGHT(x,18) ^ ((x) >> 3))
-#define SIG1(x) (ROTRIGHT(x,17) ^ ROTRIGHT(x,19) ^ ((x) >> 10))
+/* 位运算辅助宏 */
+#define ROTRIGHT(a,b) (((a) >> (b)) | ((a) << (32-(b))))   /* 循环右移 */
+#define CH(x,y,z)  (((x) & (y)) ^ (~(x) & (z)))           /* 条件函数 */
+#define MAJ(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z))) /* 多数函数 */
+#define EP0(x) (ROTRIGHT(x,2) ^ ROTRIGHT(x,13) ^ ROTRIGHT(x,22))  /* 扩展函数 Σ0 */
+#define EP1(x) (ROTRIGHT(x,6) ^ ROTRIGHT(x,11) ^ ROTRIGHT(x,25))  /* 扩展函数 Σ1 */
+#define SIG0(x) (ROTRIGHT(x,7) ^ ROTRIGHT(x,18) ^ ((x) >> 3))     /* 消息调度 σ0 */
+#define SIG1(x) (ROTRIGHT(x,17) ^ ROTRIGHT(x,19) ^ ((x) >> 10))   /* 消息调度 σ1 */
 
 static const uint32_t k[64] = {
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
@@ -506,7 +651,17 @@ void sha256_hash_to_hex(const uint8_t hash[SHA256_BLOCK_SIZE], char hex[65]) {
 }
 
 /**
- * 密码哈希 - 使用 SHA-256 (salt + password)
+ * 密码哈希计算
+ *
+ * 将盐值和密码拼接后计算 SHA-256 哈希，输出 64 字节十六进制字符串。
+ * 验证密码时，用相同的盐值重新计算哈希并与存储值比较。
+ *
+ * 存储格式：用户表中保存 password_hash（64字符十六进制）和 salt（32字符随机串）
+ * 验证流程：hash_password(input_password, stored_salt) == stored_hash ?
+ *
+ * @param password  明文密码
+ * @param salt      盐值（32字节随机串）
+ * @param out_hex   [out] 64字节十六进制哈希字符串
  */
 void hash_password(const char *password, const char *salt, char *out_hex) {
     uint8_t hash[SHA256_BLOCK_SIZE];
@@ -520,7 +675,9 @@ void hash_password(const char *password, const char *salt, char *out_hex) {
 }
 
 /**
- * 获取时间戳字符串
+ * 获取当前时间戳字符串
+ *
+ * @param buffer [out] 至少 32 字节，输出格式 "YYYY-MM-DD HH:MM:SS"
  */
 void get_timestamp(char *buffer) {
     time_t now = time(NULL);
@@ -529,54 +686,64 @@ void get_timestamp(char *buffer) {
 }
 
 /**
- * 获取当前年份和周数
+ * 计算当前日期属于哪一年的第几周
+ *
+ * 以周一作为每周起始日，1月1日所在的周为第1周。
+ * 用于排班系统中按周查询排班记录。
+ *
+ * @param year  [out] 年份（如 2026）
+ * @param week  [out] 周数（1-53）
+ * @return 固定返回 0
  */
 int get_year_week(int *year, int *week) {
     time_t now = time(NULL);
     struct tm *t = localtime(&now);
-
     *year = t->tm_year + 1900;
 
-    // 计算第几周（从每年第一周开始）
+    /* 计算 1月1日是星期几（让系统填充 tm_wday） */
     struct tm first_day = {0};
     first_day.tm_year = *year - 1900;
     first_day.tm_mon = 0;
     first_day.tm_mday = 1;
-    mktime(&first_day);  // 让系统填充 tm_wday
+    mktime(&first_day);
 
-    // 1月1日是星期几（0=周日）
-    int first_wday = first_day.tm_wday;
+    int first_wday = first_day.tm_wday;  /* 0=周日, 1=周一, ... */
+    int yday = t->tm_yday + 1;           /* 当前是今年第几天（从1开始） */
 
-    // 计算当前是一年中的第几天（tm_yday 从0开始，+1变为从1开始）
-    int yday = t->tm_yday + 1;
-
-    // 偏移：让周一=0，周日=6
+    /* 将周日映射为 6，周一映射为 0（以周一为起始） */
     int offset = (first_wday == 0) ? 6 : first_wday - 1;
 
-    // 周数 = (天数 + 偏移 - 1) / 7 + 1
+    /* 周数 = (天数 + 偏移 - 1) / 7 + 1 */
     *week = (yday + offset - 1) / 7 + 1;
-
     return 0;
 }
 
 /**
- * 生成唯一ID（简单的自增序号）
- * 格式: 基于 g_auto_id_counter，确保连续不跳跃
- * 注意: 需要在启动时调用 init_sale_id_counter() 来初始化计数器
+ * 通用 ID 生成器（简单自增）
+ *
+ * 用于供应商、排班、调拨单等不需要特殊格式的实体。
+ * 返回 ++g_auto_id_counter，从 1 开始连续递增。
+ *
+ * @return 新的唯一 ID
  */
 int generate_id(void) {
     return ++g_auto_id_counter;
 }
 
 /**
- * 初始化销售订单ID计数器
- * 从 sales.txt 和 pending_sales.txt 中扫描最大订单号，确保新订单从最大值继续
+ * 初始化销售订单 ID 计数器
+ *
+ * 扫描 sales.txt（已完成订单）和 pending_sales.txt（挂单），
+ * 找出历史最大订单号，将 g_sale_order_counter 设为该值。
+ * 这样下次调用 generate_sale_order_id() 时返回 max+1，避免 ID 冲突。
+ *
+ * 必须在系统启动时（init_system 之后）调用。
  */
 void init_sale_id_counter(void) {
     char filepath[256];
     int max_sale_id = 0;
-    
-    // 扫描 sales.txt 获取最大订单号
+
+    /* 扫描已完成销售记录 */
     snprintf(filepath, sizeof(filepath), "%s/sales.txt", DATA_DIR);
     FILE *fp = fopen(filepath, "r");
     if (fp) {
@@ -584,20 +751,17 @@ void init_sale_id_counter(void) {
         while (fgets(line, sizeof(line), fp)) {
             trim(line);
             if (strlen(line) == 0) continue;
-            
             char *saveptr;
             char *token = strtok_r(line, "|", &saveptr);
             if (token) {
                 int id = atoi(token);
-                if (id > max_sale_id) {
-                    max_sale_id = id;
-                }
+                if (id > max_sale_id) max_sale_id = id;
             }
         }
         fclose(fp);
     }
-    
-    // 也检查 pending_sales.txt
+
+    /* 扫描挂单记录 */
     snprintf(filepath, sizeof(filepath), "%s/pending_sales.txt", DATA_DIR);
     fp = fopen(filepath, "r");
     if (fp) {
@@ -605,21 +769,17 @@ void init_sale_id_counter(void) {
         while (fgets(line, sizeof(line), fp)) {
             trim(line);
             if (strlen(line) == 0) continue;
-            
             char *saveptr;
             char *token = strtok_r(line, "|", &saveptr);
             if (token) {
                 int id = atoi(token);
-                if (id > max_sale_id) {
-                    max_sale_id = id;
-                }
+                if (id > max_sale_id) max_sale_id = id;
             }
         }
         fclose(fp);
     }
-    
-    // 设置销售订单计数器 = 最大ID，下次会+1
-    g_sale_order_counter = max_sale_id;
+
+    g_sale_order_counter = max_sale_id;  /* 下次 ++ 后为 max+1 */
 }
 
 /**
@@ -633,81 +793,91 @@ int generate_sale_order_id(void) {
 // ==================== 初始化/清理 ====================
 
 /**
- * 初始化系统
+ * 系统初始化（main 函数启动时调用）
+ *
+ * 初始化流程：
+ *   1. 初始化随机数种子（用于 generate_salt 等）
+ *   2. 创建必要目录（data/、tmp/、output/）
+ *   3. 初始化 5 个哈希表（员工、商品、条码、供应商、会员手机号）
+ *   4. 加载系统配置（config.txt）
+ *   5. 从文件加载核心数据（员工、商品、供应商、会员、日结单、批次、促销）
+ *
+ * 注意：此函数只加载基础数据。main.c 中还会额外调用：
+ *   init_sale_id_counter()、load_schedules()、load_pending_sales() 等。
+ *
+ * @return 0 成功，-1 哈希表分配失败
  */
 int init_system(void) {
     srand((unsigned int)time(NULL));
 
-    // 创建必要目录
-    ensure_dir(DATA_DIR);
-    ensure_dir(TMP_DIR);
-    ensure_dir(OUTPUT_DIR);
-    
-    // 初始化哈希表
-    g_employee_hash = hash_create(HASH_TABLE_SIZE);
-    g_product_hash = hash_create(HASH_TABLE_SIZE);
-    g_barcode_hash = hash_create(HASH_TABLE_SIZE);
-    g_supplier_hash = hash_create(HASH_TABLE_SIZE);
-    g_member_phone_hash = hash_create(HASH_TABLE_SIZE);  // 会员手机号哈希表
-    
-    if (!g_employee_hash || !g_product_hash || !g_barcode_hash || 
+    /* 1. 创建必要目录（已存在则忽略） */
+    ensure_dir(DATA_DIR);    /* data/  — 数据文件目录 */
+    ensure_dir(TMP_DIR);     /* tmp/   — 临时文件目录（atomic_write 的 .tmp 文件） */
+    ensure_dir(OUTPUT_DIR);  /* output/ — 输出目录（报表、小票、备份） */
+
+    /* 2. 初始化哈希表（桶数量使用质数 10007 以减少冲突） */
+    g_employee_hash    = hash_create(HASH_TABLE_SIZE);
+    g_product_hash     = hash_create(HASH_TABLE_SIZE);
+    g_barcode_hash     = hash_create(HASH_TABLE_SIZE);
+    g_supplier_hash    = hash_create(HASH_TABLE_SIZE);
+    g_member_phone_hash = hash_create(HASH_TABLE_SIZE);
+
+    if (!g_employee_hash || !g_product_hash || !g_barcode_hash ||
         !g_supplier_hash || !g_member_phone_hash) {
         fprintf(stderr, "初始化哈希表失败\n");
         return -1;
     }
-    
-    // 加载系统配置
+
+    /* 3. 加载系统配置 */
     load_config();
-    
-    // 从文件加载数据
-    load_employees();
-    load_products();
-    load_suppliers();
-    load_members();        // 加载会员数据
-    load_settlements();    // 加载日结单数据
-    load_batches();        // 加载批次数据
-    load_promotions();     // 加载促销数据
-    
+
+    /* 4. 从文件加载核心数据（每个 load_xxx 内部会处理文件不存在的情况） */
+    load_employees();     /* 员工 → g_employee_hash */
+    load_products();      /* 商品 → g_product_hash + g_barcode_hash */
+    load_suppliers();     /* 供应商 → g_supplier_hash */
+    load_members();       /* 会员 → g_members 链表 + g_member_phone_hash */
+    load_settlements();   /* 日结单 → g_settlements 链表 */
+    load_batches();       /* 批次 → g_batches 链表 */
+    load_promotions();    /* 促销 → g_promotions 链表（按优先级排序） */
+
     printf("[%s] 系统初始化完成\n", __TIME__);
     return 0;
 }
 
 /**
- * 清理系统资源
+ * 清理系统资源（main 函数退出前调用）
+ *
+ * 清理流程：
+ *   1. 将内存中的数据全量保存到文件（atomic_write 覆盖模式）
+ *   2. 释放所有哈希表及其节点
+ *   3. 释放所有链表及其节点（会员、套装、批次、促销、储值卡）
+ *
+ * 注意：g_barcode_hash 和 g_combo_barcode_hash 不需要 free_data，
+ *       因为它们的 data 指针与 g_product_hash / g_combos 共享，
+ *       由后者负责释放实际对象，避免重复释放。
  */
 void cleanup_system(void) {
-    // 保存数据到文件
+    /* 1. 全量保存数据到文件 */
     save_employees();
     save_products();
     save_suppliers();
-    save_members();      // 保存会员数据
-    save_all_settlements(); // 保存日结单
-    save_all_batches();  // 保存批次数据
-    save_all_promotions(); // 保存促销数据
-    save_config();       // 保存系统配置
+    save_members();
+    save_all_settlements();
+    save_all_batches();
+    save_all_promotions();
+    save_config();
 
-    // 释放哈希表
-    if (g_employee_hash) {
-        hash_destroy(g_employee_hash, free);
-    }
-    if (g_product_hash) {
-        hash_destroy(g_product_hash, free);
-    }
-    if (g_barcode_hash) {
-        hash_destroy(g_barcode_hash, NULL);
-    }
-    if (g_supplier_hash) {
-        hash_destroy(g_supplier_hash, free);
-    }
-    if (g_member_phone_hash) {
-        hash_destroy(g_member_phone_hash, free);
-    }
-    if (g_combo_barcode_hash) {
-        hash_destroy(g_combo_barcode_hash, NULL);
-    }
+    /* 2. 释放哈希表（free_data=free 表示释放 data 指向的堆内存） */
+    if (g_employee_hash)     hash_destroy(g_employee_hash, free);
+    if (g_product_hash)      hash_destroy(g_product_hash, free);
+    if (g_barcode_hash)      hash_destroy(g_barcode_hash, NULL);    /* 共享指针，不释放 data */
+    if (g_supplier_hash)     hash_destroy(g_supplier_hash, free);
+    if (g_member_phone_hash) hash_destroy(g_member_phone_hash, free);
+    if (g_combo_barcode_hash) hash_destroy(g_combo_barcode_hash, NULL); /* 共享指针 */
 
-    // 释放链表内存
-    // 释放会员链表
+    /* 3. 释放链表内存 */
+
+    /* 释放会员链表 */
     Member *m = g_members;
     while (m) {
         Member *next = m->next;
@@ -716,11 +886,10 @@ void cleanup_system(void) {
     }
     g_members = NULL;
 
-    // 释放套装链表
+    /* 释放套装链表（含子商品链表） */
     ProductCombo *combo = g_combos;
     while (combo) {
         ProductCombo *next = combo->next;
-        // 释放套装子项
         ComboItem *ci = combo->items;
         while (ci) {
             ComboItem *ci_next = ci->next;
@@ -940,21 +1109,43 @@ Employee** list_employees(int *count) {
 // ==================== 商品数据操作 ====================
 
 /**
- * 添加商品
+ * 生成商品ID
+ * 格式: P + 4位数字（如 P0001, P0002 ...）
+ */
+static void generate_product_id(char *out_id, int size) {
+    ++g_product_id_counter;
+    snprintf(out_id, size, "P%04d", g_product_id_counter);
+}
+
+/**
+ * 添加商品（自动分配ID）
+ * @param prod 商品信息（id 字段会被自动生成覆盖）
+ * @return 0 成功，-1 失败（条码重复）
  */
 int add_product(Product *prod) {
+    /* 自动生成商品ID */
+    generate_product_id(prod->id, MAX_ID_LEN);
+
+    /* 条码唯一性校验 */
+    if (strlen(prod->barcode) > 0) {
+        if (find_product_by_barcode(prod->barcode)) {
+            fprintf(stderr, "错误: 条码 %s 已存在\n", prod->barcode);
+            return -1;
+        }
+    }
+
     prod->created_at = time(NULL);
     prod->updated_at = prod->created_at;
     prod->status = 1;
-    
+
     Product *new_prod = (Product*)malloc(sizeof(Product));
     *new_prod = *prod;
-    
+
     hash_insert(g_product_hash, prod->id, new_prod);
     if (strlen(prod->barcode) > 0) {
         hash_insert(g_barcode_hash, prod->barcode, new_prod);
     }
-    
+
     return 0;
 }
 
@@ -1034,6 +1225,19 @@ int load_products(void) {
         hash_insert(g_product_hash, prod->id, prod);
         if (strlen(prod->barcode) > 0) {
             hash_insert(g_barcode_hash, prod->barcode, prod);
+        }
+
+        /* 更新商品ID计数器（兼容旧格式 "P0001" 和旧手动ID） */
+        if (prod->id[0] == 'P' || prod->id[0] == 'p') {
+            int num = atoi(prod->id + 1);
+            if (num > g_product_id_counter) {
+                g_product_id_counter = num;
+            }
+        }
+        /* 旧数据的手动ID也计入全局计数器，防止冲突 */
+        int id_num = atoi(prod->id);
+        if (id_num > g_auto_id_counter) {
+            g_auto_id_counter = id_num;
         }
     }
 

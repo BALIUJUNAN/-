@@ -645,6 +645,8 @@ extern int g_auto_id_counter;
 extern int g_sale_order_counter;  // 销售订单专用计数器，从1开始
 extern int g_member_id_counter;    // 会员ID专用计数器，从1开始
 extern int g_employee_id_counter;  // 员工ID专用计数器，从1开始
+extern int g_product_id_counter;   // 商品ID专用计数器，从1开始
+extern int g_transfer_id_counter;  // 调拨单专用计数器，从1开始
 extern int g_current_user_id;
 
 // 会员全局变量
@@ -1008,6 +1010,8 @@ void generate_sales_report(time_t start, time_t end, const char *format);
 int export_sales_csv(time_t start, time_t end, const char *filename);
 int export_sales_html(time_t start, time_t end, const char *filename);
 void generate_inventory_report(const char *format);
+int export_inventory_csv(const char *filename);
+int export_inventory_html(const char *filename);
 void generate_purchase_report(time_t start, time_t end, const char *format);
 void generate_profit_loss_report(time_t start, time_t end);
 void show_export_menu(void);

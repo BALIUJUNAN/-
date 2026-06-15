@@ -1,14 +1,29 @@
 /**
  * @file purchase.c
- * @brief 采购管理模块 - 订单创建、审批、收货
+ * @brief 采购管理模块 - 订单创建、审批、收货入库
+ *
+ * 采购业务流程（状态机）：
+ *
+ *   创建订单(PURCHASE_PENDING)
+ *        ↓
+ *   店长审批 → 通过(PURCHASE_APPROVED) 或 拒绝(PURCHASE_REJECTED)
+ *        ↓
+ *   库管收货(PURCHASE_COMPLETED) → 商品入库 + 库存日志
+ *
+ * 事务日志：每个操作都通过 write_transaction_log 记录到 transaction.log
+ *
+ * 数据存储：
+ *   purchase.txt      — 采购订单主表
+ *   purchase_item.txt — 采购明细表（一个订单多条明细）
+ *   transaction.log   — 事务日志（所有操作的审计追踪）
  */
 
 #include "supermarket.h"
 #include <stdlib.h>
 
 // ==================== 采购数据 ====================
-Purchase *g_purchases = NULL;
-PurchaseItem *g_purchase_items = NULL;
+Purchase *g_purchases = NULL;         // 采购订单链表
+PurchaseItem *g_purchase_items = NULL; // 采购明细链表（通过 purchase_id 关联订单）
 
 // ==================== 采购订单 ====================
 

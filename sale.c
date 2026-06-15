@@ -1,14 +1,31 @@
 /**
  * @file sale.c
  * @brief 销售交易模块 - 收银、挂单、支付、库存扣减
+ *
+ * 本模块实现完整的销售业务流程：
+ *   1. 扫描条码创建挂单（scan_and_sell）
+ *   2. 收银结算（complete_sale）：计算折扣 → 扣库存 → 打印小票 → 发放积分
+ *   3. 挂单管理：挂起、取消
+ *   4. 库存变动日志记录
+ *   5. 库存预警和盘点
+ *
+ * 数据流：
+ *   用户扫码 → create_sale（挂单链表）→ add_sale_item（明细链表）
+ *   → complete_sale → 扣库存 + save_sale_record（sales.txt）
+ *   → 从挂单链表移除 + 从明细链表移除
+ *
+ * 折扣计算层次（由外层 main.c 的 show_sale_menu 完成）：
+ *   第1层：单品促销折扣（scan_and_sell 时写入 item.price）
+ *   第2层：会员百分比折扣（discount_pct 参数）
+ *   第3层：满减固定金额（discount_amount 参数）
  */
 
 #include "supermarket.h"
 #include <stdlib.h>
 
 // ==================== 销售数据 ====================
-Sale *g_pending_sales = NULL;  // 挂单列表
-SaleItem *g_sale_items = NULL;  // 改为非static，供main.c清理用
+Sale *g_pending_sales = NULL;   // 挂单链表头（状态=SALE_PENDING 的订单）
+SaleItem *g_sale_items = NULL;  // 全局销售明细链表（所有挂单的明细，按 sale_id 关联）
 
 /**
  * 清理指定收银员的挂单及其销售明细（供logout调用）
@@ -255,20 +272,24 @@ int complete_sale(int sale_id, const char *payment_method,
             }
         }
 
-        // 商品明细
+        // 商品明细（普通商品和套装统一处理）
         receipt.item_count = 0;
         for (int i = 0; i < item_count && receipt.item_count < 100; i++) {
-            Product *prod = find_product_by_id(items[i].product_id);
-            if (prod) {
-                strncpy(receipt.items[receipt.item_count].name, prod->name,
-                        sizeof(receipt.items[0].name) - 1);
-                float orig = items[i].original_price > 0 ? items[i].original_price : items[i].price;
-                receipt.items[receipt.item_count].price = orig;
-                receipt.items[receipt.item_count].quantity = items[i].quantity;
-                receipt.items[receipt.item_count].subtotal = orig * items[i].quantity;
-                receipt.items[receipt.item_count].discount = (orig - items[i].price) * items[i].quantity;
-                receipt.item_count++;
+            /* 优先使用 SaleItem 中已保存的商品名称（支持套装） */
+            const char *item_name = items[i].product_name;
+            if (strlen(item_name) == 0) {
+                /* 兜底：从商品表查找（仅普通商品有效） */
+                Product *prod = find_product_by_id(items[i].product_id);
+                item_name = prod ? prod->name : items[i].product_id;
             }
+            strncpy(receipt.items[receipt.item_count].name, item_name,
+                    sizeof(receipt.items[0].name) - 1);
+            float orig = items[i].original_price > 0 ? items[i].original_price : items[i].price;
+            receipt.items[receipt.item_count].price = orig;
+            receipt.items[receipt.item_count].quantity = items[i].quantity;
+            receipt.items[receipt.item_count].subtotal = orig * items[i].quantity;
+            receipt.items[receipt.item_count].discount = (orig - items[i].price) * items[i].quantity;
+            receipt.item_count++;
         }
 
         // 金额信息
@@ -291,6 +312,17 @@ int complete_sale(int sale_id, const char *payment_method,
         }
     }
 
+    /* 发放会员积分（必须在小票打印之后、sale释放之前） */
+    if (sale->member_id > 0) {
+        Member *member = find_member_by_id(sale->member_id);
+        if (member) {
+            int earned = add_points(member, sale->final_amount);
+            save_members();
+            printf("[积分] 会员 %s 获得 %d 积分，当前余额: %d\n",
+                   member->name, earned, member->points);
+        }
+    }
+
     // 从挂单列表移除并释放sale（小票打印完成后再释放，避免use-after-free）
     {
         Sale **prev = &g_pending_sales;
@@ -302,6 +334,20 @@ int complete_sale(int sale_id, const char *payment_method,
                 break;
             }
             prev = &(*prev)->next;
+        }
+    }
+
+    /* 从全局销售明细链表中移除该订单的所有明细（防止内存泄漏） */
+    {
+        SaleItem **si_prev = &g_sale_items;
+        while (*si_prev) {
+            if ((*si_prev)->sale_id == sale_id) {
+                SaleItem *to_free = *si_prev;
+                *si_prev = (*si_prev)->next;
+                free(to_free);
+            } else {
+                si_prev = &(*si_prev)->next;
+            }
         }
     }
 

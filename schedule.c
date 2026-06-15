@@ -1,13 +1,23 @@
 /**
  * @file schedule.c
- * @brief 排班管理模块 - 员工排班、周排班表
+ * @brief 排班管理模块 - 员工周排班、排班表显示、班次统计
+ *
+ * 排班数据结构：
+ *   每条排班记录 = 一个员工 + 一年/一周 + 7天班次
+ *   shifts[0]~shifts[6] 对应周一~周日，值为 "早"/"晚"/"休"/""
+ *
+ * 业务规则：
+ *   - 同一员工同一周只能有一条排班记录（batch_create_schedule 做唯一性检查）
+ *   - 班次类型：早班("早")、晚班("晚")、休息("休")
+ *
+ * 数据存储：schedule.txt（每行一条排班记录）
  */
 
 #include "supermarket.h"
 #include <stdlib.h>
 
 // ==================== 排班数据 ====================
-static Schedule *g_schedules = NULL;
+static Schedule *g_schedules = NULL;  // 排班记录链表
 
 // ==================== 排班操作 ====================
 
@@ -154,34 +164,99 @@ const char* get_shift_name(const char *shift) {
 }
 
 /**
+ * 计算字符串的显示宽度（中文字符占2列，ASCII字符占1列）
+ */
+static int display_width(const char *str) {
+    int width = 0;
+    while (*str) {
+        if ((unsigned char)*str > 0x7F) {
+            width += 2;  // 中文字符占2列
+            str += 2;    // UTF-8中文通常3字节，但Windows控制台可能是GBK(2字节)
+            // 安全跳过：跳过所有高位字节
+            while (*str && (unsigned char)*str > 0x7F) str++;
+        } else {
+            width += 1;
+            str++;
+        }
+    }
+    return width;
+}
+
+/**
+ * 将字符串填充到指定显示宽度（右补空格）
+ */
+static void pad_to_width(char *out, int out_size, const char *str, int target_width) {
+    int w = display_width(str);
+    int pad = target_width - w;
+    if (pad < 0) pad = 0;
+
+    int written = snprintf(out, out_size, "%s", str);
+    if (written < 0) written = 0;
+    for (int i = 0; i < pad && written < out_size - 1; i++) {
+        out[written++] = ' ';
+    }
+    out[written] = '\0';
+}
+
+/**
  * 打印排班表
+ * 显示指定年份和周数的排班表，包含周一到周日共7天
  */
 void print_schedule_table(int year, int week) {
+    // 使用定宽列对齐（中文字符用pad_to_width处理）
+    const int COL_ID = 10;
+    const int COL_NAME = 10;
+    const int COL_DAY = 6;  // 每个班次列宽6
+
     printf("\n========== %d年第%d周排班表 ==========\n", year, week);
-    printf("%-10s %-10s %-6s %-6s %-6s %-6s %-6s %-6s\n", 
-           "员工ID", "姓名", "周一", "周二", "周三", "周四", "周五", "周六/日");
-    printf("------------------------------------------------------------\n");
-    
+
+    // 表头
+    char hdr[8][32];
+    pad_to_width(hdr[0], 32, "员工ID", COL_ID);
+    pad_to_width(hdr[1], 32, "姓名", COL_NAME);
+    pad_to_width(hdr[2], 32, "周一", COL_DAY);
+    pad_to_width(hdr[3], 32, "周二", COL_DAY);
+    pad_to_width(hdr[4], 32, "周三", COL_DAY);
+    pad_to_width(hdr[5], 32, "周四", COL_DAY);
+    pad_to_width(hdr[6], 32, "周五", COL_DAY);
+    pad_to_width(hdr[7], 32, "周六", COL_DAY);
+    printf("%s%s%s%s%s%s%s%s",
+           hdr[0], hdr[1], hdr[2], hdr[3], hdr[4], hdr[5], hdr[6], hdr[7]);
+
+    // 周日单独打印（需要换行或额外列）
+    char hdr_sun[32];
+    pad_to_width(hdr_sun, 32, "周日", COL_DAY);
+    printf("%s\n", hdr_sun);
+
+    printf("-------------------------------------------------------------\n");
+
     int count = 0;
     Schedule **scheds = list_week_schedules(year, week, &count);
-    
+
     for (int i = 0; i < count; i++) {
         Schedule *sch = scheds[i];
         Employee *emp = find_employee_by_id(sch->employee_id);
-        
-        printf("%-10d %-10s %-6s %-6s %-6s %-6s %-6s %-6s\n",
-            sch->employee_id,
-            emp ? emp->name : "未知",
-            get_shift_name(sch->shifts[0]),
-            get_shift_name(sch->shifts[1]),
-            get_shift_name(sch->shifts[2]),
-            get_shift_name(sch->shifts[3]),
-            get_shift_name(sch->shifts[4]),
-            get_shift_name(sch->shifts[5]));
+
+        char id_buf[32], name_buf[32], day_buf[7][32];
+        snprintf(id_buf, sizeof(id_buf), "%d", sch->employee_id);
+        pad_to_width(name_buf, 32, emp ? emp->name : "未知", COL_NAME);
+        for (int d = 0; d < 7; d++) {
+            pad_to_width(day_buf[d], 32, get_shift_name(sch->shifts[d]), COL_DAY);
+        }
+
+        // ID右对齐到COL_ID宽度
+        int id_w = display_width(id_buf);
+        int id_pad = COL_ID - id_w;
+        if (id_pad < 0) id_pad = 0;
+        printf("%*s%s%s%s%s%s%s%s%s",
+               id_pad + id_w, id_buf, name_buf,
+               day_buf[0], day_buf[1], day_buf[2], day_buf[3],
+               day_buf[4], day_buf[5], day_buf[6]);
+        printf("\n");
     }
-    
+
     free(scheds);
-    printf("================================\n\n");
+    printf("=================================\n\n");
 }
 
 /**
