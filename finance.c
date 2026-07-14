@@ -1,13 +1,50 @@
 /**
  * @file finance.c
- * @brief 财务管理模块 - 日结对账实现
+ * @brief 财务管理模块 - 收银员日结对账
+ *
+ * 日结流程：
+ *   1. 收银员下班时输入实际现金和线上收款金额
+ *   2. 系统从完成订单索引统计该收银员的系统数据
+ *   3. 计算差异（实际 - 系统）
+ *   4. 差异为零则自动确认，否则标记为"待确认"
+ *   5. 店长审核后确认日结单
+ *
+ * 对账维度：
+ *   - 现金差异 = 实际现金 - 系统现金收入
+ *   - 线上差异 = 实际线上 - 系统线上收入（微信+支付宝+储值卡）
+ *   - 总差异   = 实际总额 - 系统总额
+ *
+ * 数据存储：daily_settlement.txt
  */
 
 #include "supermarket.h"
+#include "app/sm_sales_service.h"
 #include <math.h>
 
+#define create_settlement sm_legacy_create_settlement
+#define find_settlement sm_legacy_find_settlement
+#define find_settlement_by_cashier_date sm_legacy_find_settlement_by_cashier_date
+#define list_settlements_by_date sm_legacy_list_settlements_by_date
+#define list_cashier_settlements sm_legacy_list_cashier_settlements
+#define confirm_settlement sm_legacy_confirm_settlement
+#define print_settlement_detail sm_legacy_print_settlement_detail
+#define load_settlements sm_legacy_load_settlements
+#define save_settlement sm_legacy_save_settlement
+#define save_all_settlements sm_legacy_save_all_settlements
+
+int sm_legacy_create_settlement(int, float, float, const char *);
+DailySettlement *sm_legacy_find_settlement(int);
+DailySettlement *sm_legacy_find_settlement_by_cashier_date(int, time_t);
+DailySettlement **sm_legacy_list_settlements_by_date(time_t, int *);
+DailySettlement **sm_legacy_list_cashier_settlements(int, int *);
+int sm_legacy_confirm_settlement(int, const char *);
+void sm_legacy_print_settlement_detail(int);
+int sm_legacy_load_settlements(void);
+int sm_legacy_save_settlement(DailySettlement *);
+int sm_legacy_save_all_settlements(void);
+
 // ==================== 全局变量 ====================
-static DailySettlement *g_settlements = NULL;
+static DailySettlement *g_settlements = NULL;  // 日结单链表
 
 // ==================== 日结操作 ====================
 
@@ -17,78 +54,28 @@ static DailySettlement *g_settlements = NULL;
 void calculate_cashier_sales(int cashier_id, time_t start, time_t end,
                             int *order_count, float *cash_total, 
                             float *online_total, float *grand_total) {
+    Sale *sales = NULL;
+    size_t count = 0;
+    size_t i;
     *order_count = 0;
     *cash_total = 0;
     *online_total = 0;
     *grand_total = 0;
-    
-    char sales_path[256];
-    snprintf(sales_path, sizeof(sales_path), "%s/sales.txt", DATA_DIR);
-    
-    FILE *fp = fopen(sales_path, "r");
-    if (!fp) return;
-    
-    char line[MAX_LINE_LEN];
-    while (fgets(line, sizeof(line), fp)) {
-        trim(line);
-        if (strlen(line) == 0) continue;
-        
-        // 复制一份用于分割
-        char copy[MAX_LINE_LEN];
-        strncpy(copy, line, sizeof(copy) - 1);
-        copy[sizeof(copy) - 1] = '\0';
-        
-        Sale sale;
-        memset(&sale, 0, sizeof(Sale));
-        
-        char *token;
-        char *saveptr;
-        
-        // 解析: id|cashier_id|member_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
-        token = strtok_r(copy, "|", &saveptr);
-        sale.id = token ? atoi(token) : 0;
-
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.cashier_id = token ? atoi(token) : 0;
-
-        token = strtok_r(NULL, "|", &saveptr);  // member_id（跳过）
-
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.total_amount = token ? atof(token) : 0.0f;
-
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.discount = token ? atof(token) : 0.0f;
-        
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.final_amount = token ? atof(token) : 0.0f;
-        
-        token = strtok_r(NULL, "|", &saveptr);
-        if (token) strncpy(sale.payment_method, token, sizeof(sale.payment_method) - 1);
-        
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.status = token ? atoi(token) : 0;
-        
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.created_at = token ? (time_t)atoll(token) : 0;
-        
-        // 筛选该收银员在时间段内的已完成订单
-        if (sale.cashier_id == cashier_id &&
-            sale.created_at >= start && sale.created_at <= end &&
-            sale.status == SALE_COMPLETED) {
-            
+    if (sm_service_sale_list_completed(&sales, &count) != SM_REPO_OK)
+        return;
+    for (i = 0; i < count; ++i) {
+        Sale *sale = &sales[i];
+        if (sale->cashier_id == cashier_id &&
+            sale->completed_at >= start && sale->completed_at <= end) {
             (*order_count)++;
-            *grand_total += sale.final_amount;
-            
-            // 按支付方式分类
-            if (strcmp(sale.payment_method, "现金") == 0) {
-                *cash_total += sale.final_amount;
-            } else {
-                *online_total += sale.final_amount;
-            }
+            *grand_total += sale->final_amount;
+            if (strcmp(sale->payment_method, "现金") == 0)
+                *cash_total += sale->final_amount;
+            else
+                *online_total += sale->final_amount;
         }
     }
-    
-    fclose(fp);
+    sm_service_sales_array_free(sales);
 }
 
 /**

@@ -1,15 +1,61 @@
 /**
  * @file main.c
- * @brief 超市管理系统主程序 - 业务流程控制
- * 
- * 所有用户界面逻辑已移至 ui.c/ui.h
+ * @brief 超市管理系统主程序 - 入口函数、菜单控制、业务流程编排
+ *
+ * 本文件是整个系统的用户交互层，负责：
+ *
+ *   1. 系统启动初始化
+ *      - init_system() 初始化哈希表、加载配置
+ *      - 加载所有数据文件（员工/商品/会员/销售/采购/排班...）
+ *      - 首次使用自动创建默认管理员（admin/admin123）
+ *
+ *   2. 登录/权限管理
+ *      - login(): SHA-256(salt+password) 验证
+ *      - logout(): 记录日志 + 清理该收银员的挂单
+ *      - check_permission(): 管理员拥有全部权限，其他角色精确匹配
+ *
+ *   3. 主菜单及各子菜单
+ *      - 数字选项 0-9 + 字母选项 A-F
+ *      - 每个子菜单都是 while(1) 循环，输入 0 返回上级
+ *
+ *   4. 关键业务流程编排（以销售为例）
+ *      show_sale_menu():
+ *        扫码 → 创建挂单 → 显示明细 → 识别会员 → 计算折扣
+ *        → 选择支付方式 → 现金/微信/支付宝/储值卡
+ *        → 储值卡需验证密码，余额与销售在同一数据库事务提交
+ *        → complete_sale() → 扣库存 + 打小票 + 发积分
+ *
+ * 菜单结构：
+ *   主菜单
+ *   ├── 1. 登录/注销
+ *   ├── 2. 人员管理（CRUD + 表格显示）
+ *   ├── 3. 商品管理（添加/列表/条码查询/编辑/预警/盘点）
+ *   ├── 4. 销售管理（扫码/挂单/支付/取消）
+ *   ├── 5. 采购管理（创建/审批/收货/列表）
+ *   ├── 6. 排班管理（创建/查看/统计）
+ *   ├── 7. 报表管理（销售/库存/采购/盈亏/导出）
+ *   ├── 8. 系统设置（备份/信息/初始化管理员）
+ *   ├── 9. 小票打印（测试/设置端口/历史小票）
+ *   ├── A. 套装管理
+ *   ├── B. 库存调拨
+ *   ├── C. 供应商结算
+ *   ├── D. 促销管理
+ *   ├── E. 储值卡管理
+ *   ├── F. 会员管理
+ *   └── 0. 退出系统
  */
 
 #include "supermarket.h"
 #include "ui.h"
+#include "app/sm_app_context.h"
+#include "app/sm_finance_service.h"
 #include <conio.h>
 #include <ctype.h>
 #include <limits.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 // ==================== 全局状态 ====================
 int g_current_user_id = 0;
@@ -44,51 +90,75 @@ void logout(void);
 
 /**
  * 用户登录
+ *
+ * 登录流程：
+ *   1. 获取所有在职员工列表
+ *   2. 按用户名逐一匹配
+ *   3. 对匹配到的员工，用其 salt 重新计算密码哈希并与存储值比对
+ *   4. 验证通过则设置全局用户 ID 和角色
+ *
+ * @param username  用户名（对应员工姓名）
+ * @param password  明文密码
+ * @return 0 登录成功，-1 用户名或密码错误
  */
 int login(const char *username, const char *password) {
-    // 简化版：根据用户名查找员工
     int count = 0;
+    /* list_employees() 返回所有在职员工的动态数组，需要 free 释放 */
     Employee **employees = list_employees(&count);
-    
+
     for (int i = 0; i < count; i++) {
+        /* 按员工姓名匹配用户名 */
         if (strcmp(employees[i]->name, username) == 0) {
-            // 验证密码（简化版）
             char hash[65];
+            /* hash_password(明文密码, 该员工的盐值, 输出哈希)
+             * 计算 SHA-256(salt + password)，与存储的哈希比对 */
             hash_password(password, employees[i]->salt, hash);
             if (strcmp(hash, employees[i]->password_hash) == 0) {
+                /* 密码匹配成功：设置全局登录状态 */
                 g_current_user_id = employees[i]->id;
                 strncpy(g_current_user_role, employees[i]->role, 19);
-                free(employees);
+                free(employees);  /* 释放 list_employees 返回的数组 */
                 return 0;
             }
         }
     }
-    
-    free(employees);
+
+    free(employees);  /* 遍历完毕未匹配，也要释放数组 */
     return -1;
 }
 
 /**
  * 用户登出
+ *
+ * 登出流程：
+ *   1. 查找当前登录员工信息（用于日志显示）
+ *   2. 记录登出操作到 AbyssDB 审计日志
+ *   3. 清理该收银员名下的所有挂单（防止切换账号后看到别人的订单）
+ *   4. 重置全局登录状态
  */
 void logout(void) {
     if (g_current_user_id > 0) {
+        /* find_employee_by_id: 按 ID 从哈希表中查找员工（O(1)） */
         Employee *emp = find_employee_by_id(g_current_user_id);
         if (emp) {
             char timestamp[32];
+            /* get_timestamp: 获取当前时间的 "YYYY-MM-DD HH:MM:SS" 字符串 */
             get_timestamp(timestamp);
             printf("[%s] 用户 %s [%s] 登出\n", timestamp, emp->name, emp->role);
-            
-            // 记录登出日志
+
+            /* write_transaction_log: 将操作记录写入 AbyssDB 审计日志
+             * 参数: 类型, 关联ID, 操作名, 描述, 操作员ID */
             char log_msg[256];
             snprintf(log_msg, sizeof(log_msg), "用户 %s 登出系统", emp->name);
             write_transaction_log("AUTH", g_current_user_id, "LOGOUT", log_msg, g_current_user_id);
         }
-        
-        // 清理当前用户的挂单及其销售明细（防止切换账号后看到上一个人订单）
+
+        /* cleanup_cashier_sales: 从 g_pending_sales 和 g_sale_items 中
+         * 移除该收银员的所有挂单和明细，释放内存 */
         cleanup_cashier_sales(g_current_user_id);
     }
-    
+
+    /* 重置全局登录状态 */
     g_current_user_id = 0;
     g_current_user_role[0] = '\0';
     printf("已退出登录\n");
@@ -409,8 +479,8 @@ void show_product_menu(void) {
             case 1: {
                 Product prod;
                 memset(&prod, 0, sizeof(prod));
-                
-                get_safe_string("商品ID: ", prod.id, sizeof(prod.id));
+
+                /* 商品ID由系统自动生成，无需手动输入 */
                 get_safe_string("商品名称: ", prod.name, sizeof(prod.name));
                 get_safe_string("条码: ", prod.barcode, sizeof(prod.barcode));
                 prod.price = get_safe_float("售价: ");
@@ -418,49 +488,29 @@ void show_product_menu(void) {
                 prod.stock = get_safe_int("库存: ", 0, 999999);
                 prod.min_stock = get_safe_int("最低库存预警: ", 0, 999999);
                 get_safe_string("供应商ID: ", prod.supplier_id, sizeof(prod.supplier_id));
-                
+
                 if (add_product(&prod) == 0) {
                     save_products();
-                    print_success("商品添加成功！");
+                    print_success("商品添加成功！系统分配ID: %s", prod.id);
                 } else {
-                    print_error("商品添加失败，ID可能已存在");
+                    print_error("商品添加失败（条码可能已存在）");
                 }
                 break;
             }
             
             case 2: {
-                /* 先统计商品数量 */
                 int count = 0;
-                Product **products = NULL;
-                
-                for (int i = 0; i < g_product_hash->size; i++) {
-                    HashNode *node = g_product_hash->buckets[i];
-                    while (node) {
-                        Product *p = (Product*)node->data;
-                        if (p->status == 1) {
-                            count++;
-                        }
-                        node = node->next;
-                    }
-                }
-                
+                int active_count = 0;
+                Product **products = list_products(&count);
+                for (int i = 0; i < count; ++i)
+                    if (products[i]->status == STATUS_ACTIVE)
+                        products[active_count++] = products[i];
+                count = active_count;
+
                 if (count == 0) {
                     print_warning("暂无商品记录");
+                    free(products);
                     break;
-                }
-                
-                /* 收集商品数据 */
-                products = malloc(count * sizeof(Product*));
-                int idx = 0;
-                for (int i = 0; i < g_product_hash->size; i++) {
-                    HashNode *node = g_product_hash->buckets[i];
-                    while (node) {
-                        Product *p = (Product*)node->data;
-                        if (p->status == 1) {
-                            products[idx++] = p;
-                        }
-                        node = node->next;
-                    }
                 }
                 
                 /* 分页显示 */
@@ -618,10 +668,18 @@ void show_sale_menu(void) {
         
         switch (choice) {
             case 1: {
+                /* ===== 扫描销售 ===== */
                 char barcode[30];
                 get_safe_string("请输入条码: ", barcode, sizeof(barcode));
                 int qty = get_safe_int("数量: ", 1, 9999);
-                
+
+                /* scan_and_sell(): 扫描条码并创建挂单
+                 *   内部流程:
+                 *   1. 先查 g_combo_barcode_hash 判断是否是套装条码
+                 *   2. 如果是套装 → check_combo_stock 检查库存 → 创建挂单
+                 *   3. 如果是普通商品 → 查 g_barcode_hash → 检查库存 → 创建挂单
+                 *   4. 自动应用单品促销折扣（查 g_promotions 中该商品的有效促销）
+                 *   返回: 新创建的销售订单 ID（挂单号），失败返回 -1 */
                 int sale_id = scan_and_sell(g_current_user_id, barcode, qty);
                 if (sale_id > 0) {
                     print_success("已添加到挂单，订单号: %d", sale_id);
@@ -670,25 +728,43 @@ void show_sale_menu(void) {
             }
             
             case 3: {
+                /* ============================================================
+                 * ===== 完成支付 — 核心业务流程（最复杂的一个 case） =====
+                 * ============================================================
+                 * 完整流程:
+                 *   1. 验证挂单存在
+                 *   2. 显示订单信息和商品明细
+                 *   3. 识别会员（手机号/储值卡号 → 查找会员）
+                 *   4. 计算综合折扣（单品促销 + 会员折扣 + 满减）
+                 *   5. 选择支付方式（现金/微信/支付宝/储值卡）
+                 *   6. 储值卡支付需验证密码，扣款与销售原子提交
+                 *   7. 调用 complete_sale() 完成交易
+                 *   8. complete_sale 内部: 扣库存 → 保存记录 → 打印小票 → 发放积分
+                 * ============================================================ */
                 int sale_id = get_safe_int("订单号: ", 1, 999999);
-                
+
+                /* find_pending_sale(): 在 g_pending_sales 链表中查找挂单 */
                 Sale *sale_check = find_pending_sale(sale_id);
                 if (!sale_check) {
                     print_error("未找到该挂单");
                     break;
                 }
 
+                /* calculate_sale_total(): 遍历 g_sale_items 中该订单的所有明细，
+                 * 累加每个商品的 subtotal（折后价 × 数量） */
                 float total = calculate_sale_total(sale_id);
-                
+
                 print_title_box_single("订单信息");
                 print_info("订单号: %d", sale_check->id);
                 print_info("收银员: %d", sale_check->cashier_id);
                 print_info("商品总价: ¥%.2f", total);
-                
-                /* 显示商品明细 */
+
+                /* get_sale_items(): 从 g_sale_items 链表中提取该订单的所有明细，
+                 * 返回动态数组（调用方需 free 释放） */
                 int item_count = 0;
                 SaleItem *items = get_sale_items(sale_id, &item_count);
-                
+
+                /* 用表格显示商品明细 */
                 if (item_count > 0) {
                     TableColumn cols[] = {
                         {"商品", 20, ALIGN_LEFT},
@@ -696,10 +772,9 @@ void show_sale_menu(void) {
                         {"单价", 10, ALIGN_RIGHT},
                         {"小计", 10, ALIGN_RIGHT}
                     };
-                    
                     table_begin(cols, 4);
                     table_draw_header();
-                    
+
                     char buf[4][64];
                     for (int i = 0; i < item_count; i++) {
                         snprintf(buf[0], sizeof(buf[0]), "%s", items[i].product_name);
@@ -711,33 +786,37 @@ void show_sale_menu(void) {
                     }
                     table_end();
                 }
-                
-                /* ===== 会员查找（所有支付方式通用） ===== */
+
+                /* ===== 第3步：识别会员 =====
+                 * 优先从挂单中获取已关联的会员（扫码时可能已设置），
+                 * 否则提示用户输入手机号或储值卡号 */
                 Member *pay_member = sale_check->member_id > 0
                     ? find_member_by_id(sale_check->member_id) : NULL;
 
                 if (!pay_member) {
-                    /* 自动提示输入会员信息，支持手机号或储值卡号 */
                     char member_input[30] = {0};
                     print_hint("提示: 输入会员手机号可享受会员折扣，直接回车跳过");
                     get_safe_string("会员手机号（可选）: ", member_input, sizeof(member_input));
                     trim(member_input);
 
                     if (strlen(member_input) > 0) {
+                        /* find_member_by_phone(): 在 g_member_phone_hash 中按手机号查找（O(1)） */
                         pay_member = find_member_by_phone(member_input);
                         if (!pay_member) {
-                            /* 尝试按储值卡号查找绑定的会员 */
+                            /* 手机号未找到，尝试按储值卡号查找绑定的会员 */
                             VipCard *vc = g_vip_cards;
                             while (vc) {
                                 if (strcmp(vc->card_no, member_input) == 0) break;
                                 vc = vc->next;
                             }
                             if (vc && vc->member_id > 0)
+                                /* find_member_by_id(): 在 g_members 链表中按 ID 查找 */
                                 pay_member = find_member_by_id(vc->member_id);
                         }
 
                         if (pay_member) {
-                            sale_check->member_id = pay_member->id;
+                            sale_check->member_id = pay_member->id;  /* 将会员关联到订单 */
+                            /* get_member_level_name(): 返回等级中文名（普通/银卡/金卡/钻石） */
                             print_success("已识别会员: %s [%s]",
                                          pay_member->name,
                                          get_member_level_name(pay_member->level));
@@ -747,15 +826,27 @@ void show_sale_menu(void) {
                     }
                 }
 
-                /* ===== 计算折扣（会员已在上面确定） ===== */
+                /* ===== 第4步：计算综合折扣 =====
+                 * 流程：创建临时购物车 → 填入商品 → 计算折扣 → 销毁购物车
+                 *
+                 * calculate_total_discount() 内部逻辑：
+                 *   1. 遍历购物车每个商品，查找该商品的所有有效促销，取最优折扣
+                 *   2. 计算会员折扣（银卡98折/金卡95折/钻石90折）
+                 *   3. 计算满减（满 threshold 减 discount_amount）
+                 *   4. 返回 DiscountInfo 结构（含各项折扣金额和标志位） */
                 DiscountInfo discount_info = {0};
 
                 if (item_count > 0) {
+                    /* cart_create(): 分配 Cart 结构体，初始化为空购物车 */
                     Cart *temp_cart = cart_create();
                     for (int i = 0; i < item_count; i++) {
+                        /* cart_add_item(): 将商品加入购物车，
+                         * 自动查 g_promotions 应用单品折扣，设置 discounted_price */
                         cart_add_item(temp_cart, items[i].product_id, items[i].quantity);
                     }
+                    /* calculate_total_discount(): 计算三层折扣叠加结果 */
                     discount_info = calculate_total_discount(temp_cart, pay_member);
+                    /* cart_destroy(): 释放购物车及所有 CartItem 节点 */
                     cart_destroy(temp_cart);
                 }
 
@@ -829,13 +920,20 @@ void show_sale_menu(void) {
                             print_error("未找到该会员，无法使用储值卡");
                             break;
                         }
-                        /* 重新计算折扣 */
-                        discount_info = calculate_total_discount(
-                            NULL, pay_member);  // 已在上面算过，此处兜底
-                        member_pct = discount_info.has_member_discount
-                            ? discount_info.member_discount_rate : 0;
-                        override_amount = discount_info.has_override
-                            ? discount_info.override_discount : 0;
+                        /* 使用前面已计算好的折扣信息（此处 pay_member 刚确定，
+                         * 需要基于已有 cart 重新计算会员折扣部分） */
+                        if (item_count > 0) {
+                            Cart *vip_cart = cart_create();
+                            for (int ci = 0; ci < item_count; ci++) {
+                                cart_add_item(vip_cart, items[ci].product_id, items[ci].quantity);
+                            }
+                            discount_info = calculate_total_discount(vip_cart, pay_member);
+                            cart_destroy(vip_cart);
+                            member_pct = discount_info.has_member_discount
+                                ? discount_info.member_discount_rate : 0;
+                            override_amount = discount_info.has_override
+                                ? discount_info.override_discount : 0;
+                        }
                         final_pay = total * (1 - member_pct / 100.0f) - override_amount;
                         if (final_pay < 0) final_pay = 0;
                         cash_received = final_pay;
@@ -869,13 +967,15 @@ void show_sale_menu(void) {
                     }
                     print_info("应付金额: ¥%.2f", final_pay);
 
+                    /* 余额检查 */
                     if (vip_card->balance < final_pay) {
                         print_error("储值卡余额不足！余额: ¥%.2f，需支付: ¥%.2f",
                                     vip_card->balance, final_pay);
                         break;
                     }
 
-                    // 验证储值卡支付密码
+                    /* verify_vip_card_password(): 用输入密码 + 卡的盐值计算哈希，
+                     * 与卡内存储的 password_hash 比对（SHA-256 验证） */
                     char pay_password[50];
                     get_password_input("请输入储值卡支付密码: ", pay_password, sizeof(pay_password));
                     if (verify_vip_card_password(vip_card->card_no, pay_password) != 0) {
@@ -887,33 +987,35 @@ void show_sale_menu(void) {
                     snprintf(confirm_msg, sizeof(confirm_msg),
                              "确认使用储值卡支付 ¥%.2f？", final_pay);
                     if (confirm_action(confirm_msg)) {
-                        if (consume_vip_card(vip_card->card_no, final_pay, sale_id,
-                                             g_current_user_id, "购物消费") == 0) {
-                            if (complete_sale(sale_id, method,
-                                              member_pct, override_amount,
-                                              final_pay) == 0) {
-                                print_success("储值卡支付完成！");
-                                print_success("消费金额: ¥%.2f，余额: ¥%.2f",
-                                              final_pay, vip_card->balance);
-                            } else {
-                                print_error("支付失败");
-                            }
+                        /* Sale, inventory, member points, card balance and the
+                         * card transaction are committed by one AbyssDB UOW. */
+                        if (complete_sale_with_vip(
+                                sale_id, method, member_pct, override_amount,
+                                final_pay, vip_card->card_no) == 0) {
+                            (void)sm_service_vip_card_get(vip_card->card_no,
+                                                          vip_card);
+                            print_success("储值卡支付完成！");
+                            print_success("消费金额: ¥%.2f，余额: ¥%.2f",
+                                          final_pay, vip_card->balance);
                         } else {
-                            print_error("储值卡扣款失败");
+                            print_error("储值卡支付失败，销售与扣款均未提交");
                         }
                     }
                     break;
                 }
 
-                /* =========== 现金/微信/支付宝 =========== */
+                /* =========== 现金/微信/支付宝支付 =========== */
                 if (strcmp(method, "现金") == 0) {
+                    /* 现金支付需要输入实收金额（用于计算找零） */
                     cash_received = get_safe_float("实收金额: ¥");
                 }
 
                 if (confirm_action("确认完成支付？")) {
+                    /* complete_sale(): 完成销售交易（扣库存+保存+打印+发积分+清理挂单） */
                     if (complete_sale(sale_id, method,
                                       member_pct, override_amount, cash_received) == 0) {
                         if (strcmp(method, "现金") == 0) {
+                            /* 现金支付显示找零金额 */
                             float change = cash_received - final_pay;
                             print_success("实收: ¥%.2f | 找零: ¥%.2f",
                                           cash_received, change > 0 ? change : 0);
@@ -923,9 +1025,11 @@ void show_sale_menu(void) {
                         print_error("支付失败");
                     }
                 }
+                /* 释放 get_sale_items 返回的动态数组 */
+                free(items);
                 break;
             }
-            
+
             case 4: {
                 int sale_id = get_safe_int("订单号: ", 1, 999999);
                 
@@ -964,25 +1068,31 @@ void show_purchase_menu(void) {
         
         switch (choice) {
             case 1: {
+                /* ===== 创建采购订单 ===== */
                 Purchase pur;
                 memset(&pur, 0, sizeof(pur));
-                
+
                 get_safe_string("供应商ID: ", pur.supplier_id, sizeof(pur.supplier_id));
                 get_safe_string("供应商名称: ", pur.supplier_name, sizeof(pur.supplier_name));
                 pur.creator_id = g_current_user_id;
-                
+
+                /* create_purchase(): 创建采购订单
+                 *   内部: 分配自增 ID → 设置状态=PURCHASE_PENDING → 加入 g_purchases 链表
+                 *   → 写入 AbyssDB 审计日志
+                 *   返回: 新订单 ID */
                 int purchase_id = create_purchase(&pur);
                 print_success("采购订单已创建，订单号: %d", purchase_id);
-                
+
                 char ans = get_yes_no("是否添采购明细");
-                
+
                 if (ans == 'Y') {
+                    /* 循环添加采购明细（输入 q 结束） */
                     while (1) {
                         char barcode[30];
                         get_safe_string("商品条码 (输入q结束): ", barcode, sizeof(barcode));
-                        
                         if (strcmp(barcode, "q") == 0) break;
-                        
+
+                        /* find_product_by_barcode(): 在 g_barcode_hash 中按条码查找商品（O(1)） */
                         Product *prod = find_product_by_barcode(barcode);
                         if (!prod) {
                             print_error("商品不存在");
@@ -1000,8 +1110,8 @@ void show_purchase_menu(void) {
                         item.quantity = qty;
                         item.price = price;
                         
+                        /* add_purchase_item(): 在 AbyssDB 中分配 ID 并提交明细。 */
                         add_purchase_item(purchase_id, &item);
-                        save_purchase_item(&item);
                         print_success("已添加: %s x %.0f", prod->name, qty);
                     }
                 }
@@ -1045,18 +1155,21 @@ void show_purchase_menu(void) {
             }
             
             case 3: {
+                /* ===== 审批采购订单 ===== */
                 int id = get_safe_int("订单号: ", 1, 999999);
                 printf("1. 审批通过  2. 拒绝: ");
                 int op = get_safe_int("", 1, 2);
-                
+
                 if (op == 1) {
                     if (confirm_action("确认审批通过该订单？")) {
+                        /* approve_purchase(): 校验状态并在数据库中原子更新索引。 */
                         if (approve_purchase(id, g_current_user_id) == 0) {
                             print_success("审批通过");
                         }
                     }
                 } else if (op == 2) {
                     if (confirm_action("确认拒绝该订单？")) {
+                        /* reject_purchase(): 设状态为 REJECTED → 记录日志 → 保存 */
                         if (reject_purchase(id, g_current_user_id) == 0) {
                             print_success("已拒绝");
                         }
@@ -1064,11 +1177,20 @@ void show_purchase_menu(void) {
                 }
                 break;
             }
-            
+
             case 4: {
+                /* ===== 库管收货入库 ===== */
                 int id = get_safe_int("订单号: ", 1, 999999);
-                
+
                 if (confirm_action("确认收货入库？")) {
+                    /* receive_purchase(): 收货入库的核心函数
+                     *   内部流程:
+                     *   1. 校验订单状态 = APPROVED
+                     *   2. 遍历采购明细（get_purchase_items）
+                     *   3. 对每个明细商品: prod->stock += quantity（增加库存）
+                     *   4. 记录库存变动日志（record_stock_log → AbyssDB）
+                     *   5. 订单、明细、商品、批次和库存流水一次提交
+                     *   返回: 0 成功, -1 失败 */
                     if (receive_purchase(id, g_current_user_id) == 0) {
                         print_success("收货完成，已入库");
                     } else {
@@ -1207,40 +1329,60 @@ void show_report_menu(void) {
         
         switch (choice) {
             case 1: {
+                /* ===== 销售报表 ===== */
                 int days = get_safe_int("统计天数 (1-30): ", 1, 30);
                 if (days <= 0) days = 7;
+                /* get_date_range(): 计算时间范围 range = [now - days*24h, now] */
                 get_date_range(&range, days);
+                /* generate_sales_report(): 从完成订单索引读取数据
+                 *   → 按时间区间筛选已完成订单 → 统计订单数/销售额/优惠/支付方式分布
+                 *   → 打印到控制台 */
                 generate_sales_report(range.start, range.end, "控制台");
                 wait_for_key();
                 break;
             }
-            
+
             case 2:
+                /* generate_inventory_report(): 遍历 g_product_hash 中所有上架商品
+                 *   → 统计商品总数/库存不足数/成本总额/零售总额 → 打印到控制台 */
                 generate_inventory_report("控制台");
                 wait_for_key();
                 break;
-            
+
             case 3: {
+                /* ===== 采购报表 ===== */
                 int days = get_safe_int("统计天数: ", 1, 365);
                 if (days <= 0) days = 30;
                 get_date_range(&range, days);
+                /* generate_purchase_report(): 查询采购 repository
+                 *   → 按时间区间筛选 → 按状态(待审核/已审核/已完成)分类统计 */
                 generate_purchase_report(range.start, range.end, "控制台");
                 wait_for_key();
                 break;
             }
-            
+
             case 4: {
+                /* ===== 盈亏报告 ===== */
                 int days = get_safe_int("统计天数: ", 1, 365);
                 if (days <= 0) days = 30;
                 get_date_range(&range, days);
+                /* generate_profit_loss_report(): 最复杂的报表
+                 *   1. 从完成订单索引统计销售收入和优惠
+                 *   2. 从库存账本索引提取"出库"记录计算销售成本(COGS)
+                 *   3. 从 g_config.monthly_fixed_cost 摊销固定成本
+                 *   4. 计算毛利 = 收入 - COGS, 净利 = 毛利 - 固定成本 */
                 generate_profit_loss_report(range.start, range.end);
                 wait_for_key();
                 break;
             }
-            
+
             case 5: {
+                /* ===== 导出报表（CSV/HTML） ===== */
                 show_export_menu();
                 int export_choice = get_safe_int("请选择导出类型: ", 1, 5);
+                /* handle_export(): 根据选择调用 export_sales_csv/export_sales_html
+                 *   或 export_inventory_csv/export_inventory_html
+                 *   导出到 output/ 目录 */
                 handle_export(export_choice);
                 break;
             }
@@ -1264,15 +1406,89 @@ void show_system_menu(void) {
     int choice = get_safe_int("", 0, 3);
     
     switch (choice) {
-        case 1:
-            print_warning("数据备份功能（待实现）");
+        case 1: {
+            /* 数据备份：将 data/ 下所有文件复制到 output/backup_时间戳/ */
+            time_t now = time(NULL);
+            struct tm *t = localtime(&now);
+            char backup_dir[256];
+            snprintf(backup_dir, sizeof(backup_dir),
+                     "%s/backup_%04d%02d%02d_%02d%02d%02d",
+                     OUTPUT_DIR,
+                     t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+                     t->tm_hour, t->tm_min, t->tm_sec);
+
+            /* 确保 output 目录存在 */
+#ifdef _WIN32
+            _mkdir(OUTPUT_DIR);
+            if (_mkdir(backup_dir) != 0) {
+#else
+            mkdir(OUTPUT_DIR, 0755);
+            if (mkdir(backup_dir, 0755) != 0) {
+#endif
+                print_error("无法创建备份目录: %s", backup_dir);
+                break;
+            }
+
+            /* 备份的文件列表 */
+            const char *data_files[] = {
+                "supermarket.abdb", "supermarket.abdb.journal",
+                NULL
+            };
+
+            if (sm_app_context_checkpoint() != SM_REPO_OK) {
+                print_error("数据库 checkpoint 失败: %s", sm_app_last_message());
+                break;
+            }
+
+            int copied = 0, failed = 0;
+            for (int i = 0; data_files[i] != NULL; i++) {
+                char src_path[512], dst_path[512];
+                snprintf(src_path, sizeof(src_path), "%s/%s", DATA_DIR, data_files[i]);
+                snprintf(dst_path, sizeof(dst_path), "%s/%s", backup_dir, data_files[i]);
+
+                FILE *src = fopen(src_path, "rb");
+                if (!src) {
+                    /* 文件不存在不是错误（可能尚未创建） */
+                    continue;
+                }
+
+                FILE *dst = fopen(dst_path, "wb");
+                if (!dst) {
+                    fclose(src);
+                    failed++;
+                    continue;
+                }
+
+                /* 逐块复制文件内容 */
+                char buf[4096];
+                size_t n;
+                while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+                    fwrite(buf, 1, n, dst);
+                }
+
+                fclose(src);
+                fclose(dst);
+                copied++;
+            }
+
+            if (copied > 0) {
+                print_success("备份完成！目录: %s", backup_dir);
+                print_info("已备份 %d 个文件", copied);
+            } else {
+                print_warning("没有需要备份的数据文件");
+            }
+            if (failed > 0) {
+                print_warning("%d 个文件备份失败", failed);
+            }
+            wait_for_key();
             break;
+        }
         
         case 2:
             print_title_box_single("系统信息");
             print_info("超市管理系统 v1.0");
             print_info("基于 ANSI C 开发");
-            print_info("数据存储: 纯文本文件(.txt)");
+            print_info("数据存储: AbyssDB + 待迁移的扩展文本表");
             print_info("编译环境: GCC/MinGW");
             print_info("UI模块: 自定义美化界面");
             wait_for_key();
@@ -1405,10 +1621,21 @@ void show_printer_menu(void) {
 
 // ==================== 主函数 ====================
 
+/**
+ * 程序入口
+ *
+ * 启动流程：
+ *   1. ui_init()            — 初始化终端 UI（ANSI 颜色、清屏等）
+ *   2. init_system()         — 创建目录、初始化哈希表、加载基础数据
+ *   3. 加载扩展数据           — 排班/挂单/采购/调拨/储值卡等
+ *   4. 首次使用检测           — 无员工时自动创建默认管理员
+ *   5. show_main_menu()      — 进入主菜单循环
+ *   6. ui_cleanup()          — 退出时清理 UI 资源
+ */
 int main(void) {
-    /* 初始化UI模块 */
+    /* ui_init(): 初始化终端环境（设置 ANSI 颜色支持、清屏等） */
     ui_init();
-    
+
     printf("\n");
     printf(BOLD CYAN);
     printf("  ╔══════════════════════════════════════╗\n");
@@ -1416,48 +1643,54 @@ int main(void) {
     printf("  ║      Supermarket Management System   ║\n");
     printf("  ╚══════════════════════════════════════╝\n");
     printf(RESET);
-    
-    /* 初始化系统 */
+
+    /* init_system(): 核心初始化
+     *   → 创建 data/、tmp/、output/ 目录
+     *   → 初始化 5 个哈希表（员工/商品/条码/供应商/会员手机号）
+     *   → 打开 AbyssDB、执行首次迁移并加载系统配置
+     *   → 加载基础数据（员工/商品/供应商/会员/日结单/批次/促销） */
     if (init_system() != 0) {
         print_error("系统初始化失败");
         return 1;
     }
-    
-    /* 加载所有数据 */
-    init_sale_id_counter();
-    load_schedules();
-    load_pending_sales();
-    load_purchases();
-    load_purchase_items();
-    load_transaction_logs();
-    load_stock_logs();
-    load_combos();
-    load_stores();
-    load_store_stocks();
-    load_transfers();
-    load_supplier_finances();
-    load_payables();
-    load_payment_records();
-    load_vip_cards();
-    load_vip_card_transactions();
-    
-    /* 检查是否需要初始化管理员 */
+
+    /* 加载扩展数据（init_system 中未加载的模块） */
+    load_schedules();             /* 加载排班数据 → g_schedules 链表 */
+    load_pending_sales();         /* 加载挂单 → g_pending_sales 链表 */
+    load_purchases();             /* 从 AbyssDB 重建采购缓存 */
+    load_purchase_items();        /* 从 AbyssDB 重建采购明细缓存 */
+    load_transaction_logs();      /* 加载事务日志 → g_transaction_logs 链表 */
+    load_combos();                /* 加载套装 → g_combos 链表 + g_combo_barcode_hash */
+    load_stores();                /* 加载门店 → g_stores 链表（无文件时自动创建"总店"） */
+    load_store_stocks();          /* 加载门店库存 → g_store_stocks 链表 */
+    load_transfers();             /* 加载调拨单 → g_transfer_orders 链表（含明细） */
+    load_supplier_finances();     /* 加载供应商财务 → g_supplier_finances 链表 */
+    load_payables();              /* 加载应付账款 → g_payables 链表 */
+    load_payment_records();       /* 加载付款记录 → g_payment_records 链表 */
+    load_vip_cards();             /* 加载储值卡 → g_vip_cards 链表 */
+    load_vip_card_transactions(); /* 加载储值卡交易记录 → g_vip_card_transactions 链表 */
+
+    /* 首次使用检测：如果系统中没有任何员工，自动创建默认管理员 */
     int emp_count = 0;
+    /* list_employees(): 通过仓储游标返回所有在职员工 */
     Employee **emp_list = list_employees(&emp_count);
-    free(emp_list);
+    free(emp_list);  /* 只需要数量，立即释放数组 */
+
     if (emp_count == 0) {
         printf("\n");
         print_title_box_single("首次使用");
         print_info("系统中暂无员工，正在创建默认管理员...");
-        
+
         Employee admin;
         memset(&admin, 0, sizeof(admin));
         strcpy(admin.name, "admin");
         strcpy(admin.role, "管理员");
+        /* generate_salt(): 生成 32 字节随机盐值 */
         generate_salt(admin.salt);
+        /* hash_password(): 计算 SHA-256("admin123" + salt)，存入 password_hash */
         hash_password("admin123", admin.salt, admin.password_hash);
+        /* add_employee(): 在事务中分配 ID 并持久化 */
         add_employee(&admin);
-        save_employees();
         
         print_success("默认管理员已创建!");
         print_info("用户名: admin");
@@ -1693,42 +1926,113 @@ void show_combo_menu(void) {
 void show_store_list(void) {
     int count = 0;
     Store **stores = list_stores(&count);
-    
+
     if (count == 0) {
-        printf("暂无门店，请先添加门店\n");
+        print_warning("暂无门店，请先添加门店");
         return;
     }
-    
-    printf("\n%-6s %-20s %-15s %-10s\n", "ID", "名称", "地址", "状态");
-    printf("----------------------------------------------------\n");
-    
+
+    TableColumn cols[] = {
+        {"ID",     8, ALIGN_RIGHT},
+        {"名称",  16, ALIGN_LEFT},
+        {"地址",  16, ALIGN_LEFT},
+        {"电话",  14, ALIGN_LEFT},
+        {"店长",  10, ALIGN_LEFT},
+        {"状态",  10, ALIGN_CENTER}
+    };
+
+    table_begin(cols, 6);
+    table_draw_header();
+
+    char buf[6][64];
     for (int i = 0; i < count; i++) {
-        printf("%-6d %-20s %-15s %-10s\n",
-               stores[i]->id, stores[i]->name, stores[i]->address,
-               stores[i]->status == STORE_ACTIVE ? "营业中" : "已停业");
+        snprintf(buf[0], sizeof(buf[0]), "%d", stores[i]->id);
+        snprintf(buf[1], sizeof(buf[1]), "%s", stores[i]->name);
+        snprintf(buf[2], sizeof(buf[2]), "%s", stores[i]->address);
+        snprintf(buf[3], sizeof(buf[3]), "%s", stores[i]->phone);
+        snprintf(buf[4], sizeof(buf[4]), "%s", stores[i]->manager_name);
+        snprintf(buf[5], sizeof(buf[5]), "%s",
+                 stores[i]->status == STORE_ACTIVE ? "营业中" : "已停业");
+        const char *row[] = {buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]};
+        table_draw_row(row);
     }
+    table_end();
+    print_info("共 %d 家门店", count);
     free(stores);
 }
 
 /**
- * 添加门店
+ * 添加门店（带电话验证）
  */
 void add_new_store(void) {
     Store store;
     memset(&store, 0, sizeof(store));
-    
-    printf("门店名称: ");
-    get_string_input(store.name, sizeof(store.name));
-    printf("门店地址: ");
-    get_string_input(store.address, sizeof(store.address));
-    printf("联系电话: ");
-    get_string_input(store.phone, sizeof(store.phone));
-    
+
+    get_safe_string("门店名称: ", store.name, sizeof(store.name));
+    get_safe_string("门店地址: ", store.address, sizeof(store.address));
+
+    // 电话号码验证：必须为数字，长度7-11位
+    while (1) {
+        get_safe_string("联系电话: ", store.phone, sizeof(store.phone));
+        trim(store.phone);
+        if (strlen(store.phone) == 0) {
+            break;  // 电话可以为空
+        }
+        if (!is_valid_phone(store.phone)) {
+            print_warning("电话格式不正确，请输入7-11位数字");
+            continue;
+        }
+        break;
+    }
+
     int id = create_store(&store);
     if (id > 0) {
-        printf("门店添加成功！ID: %d\n", id);
+        print_success("门店添加成功！ID: %d", id);
     } else {
-        printf("添加失败\n");
+        print_error("添加失败");
+    }
+}
+
+/**
+ * 编辑门店
+ */
+void edit_store_info(void) {
+    int id = get_safe_int("输入门店ID: ", 1, 99999);
+    Store *store = find_store_by_id(id);
+    if (!store) {
+        print_error("未找到该门店");
+        return;
+    }
+
+    char input[256];
+
+    print_info("当前名称: %s (直接回车跳过)", store->name);
+    get_safe_string("新名称: ", input, sizeof(input));
+    if (strlen(input) > 0) strncpy(store->name, input, 99);
+
+    print_info("当前地址: %s (直接回车跳过)", store->address);
+    get_safe_string("新地址: ", input, sizeof(input));
+    if (strlen(input) > 0) strncpy(store->address, input, 255);
+
+    print_info("当前电话: %s (直接回车跳过)", store->phone);
+    while (1) {
+        get_safe_string("新电话: ", input, sizeof(input));
+        if (strlen(input) == 0) break;  // 跳过
+        if (is_valid_phone(input)) {
+            strncpy(store->phone, input, 19);
+            break;
+        }
+        print_warning("电话格式不正确，请输入7-11位数字");
+    }
+
+    print_info("当前店长: %s (直接回车跳过)", store->manager_name);
+    get_safe_string("新店长: ", input, sizeof(input));
+    if (strlen(input) > 0) strncpy(store->manager_name, input, 49);
+
+    if (update_store(store) == 0) {
+        print_success("门店信息已更新");
+    } else {
+        print_error("更新失败");
     }
 }
 
@@ -1738,42 +2042,45 @@ void add_new_store(void) {
 int select_store(const char *prompt) {
     int count = 0;
     Store **stores = list_stores(&count);
-    
+
     if (count == 0) {
-        printf("暂无门店，请先添加门店\n");
+        print_warning("暂无门店，请先添加门店");
         return -1;
     }
-    
+
     printf("\n%s\n", prompt);
-    printf("\n%-6s %-20s %-15s\n", "序号", "ID", "名称");
-    printf("----------------------------\n");
+
+    TableColumn cols[] = {
+        {"ID",   8, ALIGN_RIGHT},
+        {"名称", 20, ALIGN_LEFT},
+        {"地址", 20, ALIGN_LEFT}
+    };
+
+    table_begin(cols, 3);
+    table_draw_header();
+
+    char buf[3][64];
     for (int i = 0; i < count; i++) {
-        printf("%-6d %-6d %-20s\n", i + 1, stores[i]->id, stores[i]->name);
+        snprintf(buf[0], sizeof(buf[0]), "%d", stores[i]->id);
+        snprintf(buf[1], sizeof(buf[1]), "%s", stores[i]->name);
+        snprintf(buf[2], sizeof(buf[2]), "%s", stores[i]->address);
+        const char *row[] = {buf[0], buf[1], buf[2]};
+        table_draw_row(row);
     }
-    printf("----------------------------\n");
-    printf("请输入序号或ID (0取消): ");
-    
-    char input[32];
-    if (fgets(input, sizeof(input), stdin) == NULL) {
-        free(stores);
-        return -1;
-    }
-    input[strcspn(input, "\n")] = '\0';
-    
-    int sel = atoi(input);
+    table_end();
 
-    if (sel == 0) { free(stores); return -1; }
-
-    // 检查是序号还是ID
-    if (sel > 0 && sel <= count) {
-        int result = stores[sel - 1]->id;
-        free(stores);
-        return result;
-    }
-
+    int id = get_safe_int("请输入门店ID (0取消): ", 0, 99999);
     free(stores);
-    // 按ID查找
-    return sel;
+
+    if (id == 0) return -1;
+
+    // 验证门店是否存在
+    if (find_store_by_id(id)) {
+        return id;
+    }
+
+    print_error("门店ID %d 不存在", id);
+    return -1;
 }
 
 void show_transfer_menu(void) {
@@ -1788,72 +2095,78 @@ void show_transfer_menu(void) {
     print_info("=== 门店管理 ===");
     printf("1. 添加门店\n");
     printf("2. 门店列表\n");
+    printf("3. 编辑门店\n");
     printf("\n");
     print_info("=== 调拨管理 ===");
-    printf("3. 创建调拨单\n");
-    printf("4. 添加调拨商品\n");
-    printf("5. 审批调拨单\n");
-    printf("6. 出库确认\n");
-    printf("7. 入库确认\n");
-    printf("8. 调拨单列表\n");
+    printf("4. 创建调拨单\n");
+    printf("5. 添加调拨商品\n");
+    printf("6. 审批调拨单\n");
+    printf("7. 出库确认\n");
+    printf("8. 入库确认\n");
+    printf("9. 调拨单列表\n");
     printf("0. 返回\n");
     printf("\n请选择: ");
 
-    int choice = get_safe_int("", 0, 8);
-    
+    int choice = get_safe_int("", 0, 9);
+
     switch (choice) {
         case 1: {
             add_new_store();
             break;
         }
-        
+
         case 2: {
             show_store_list();
             break;
         }
-        
+
         case 3: {
+            edit_store_info();
+            break;
+        }
+
+        case 4: {
             int from_id = select_store("=== 选择源门店 ===");
             if (from_id < 0) break;
-            
+
             int to_id = select_store("=== 选择目标门店 ===");
             if (to_id < 0) break;
-            
+
             if (from_id == to_id) {
                 print_error("源门店和目标门店不能相同");
                 break;
             }
-            
+
             char remark[256];
             get_safe_string("备注: ", remark, sizeof(remark));
-            
+
             int id = create_transfer_order(from_id, to_id, g_current_user_id, remark);
             if (id > 0) {
                 print_success("调拨单创建成功！ID: %d", id);
             }
             break;
         }
-        
-        case 4: {
+
+        case 5: {
             int transfer_id = get_safe_int("调拨单ID: ", 1, 99999);
             char barcode[30];
             get_safe_string("商品条码: ", barcode, sizeof(barcode));
-            
+
             Product *prod = find_product_by_barcode(barcode);
             if (!prod) {
                 print_error("商品不存在");
                 break;
             }
-            
+
             int qty = get_safe_int("数量: ", 1, 9999);
-            
+
             if (add_transfer_item(transfer_id, prod->id, qty) == 0) {
                 print_success("已添加商品到调拨单");
             }
             break;
         }
-        
-        case 5: {
+
+        case 6: {
             int id = get_safe_int("调拨单ID: ", 1, 99999);
             if (confirm_action("确认审批通过该调拨单？")) {
                 if (approve_transfer(id, g_current_user_id) == 0) {
@@ -1862,8 +2175,8 @@ void show_transfer_menu(void) {
             }
             break;
         }
-        
-        case 6: {
+
+        case 7: {
             int id = get_safe_int("调拨单ID: ", 1, 99999);
             if (confirm_action("确认出库？")) {
                 if (confirm_out_transfer(id, g_current_user_id) == 0) {
@@ -1872,8 +2185,8 @@ void show_transfer_menu(void) {
             }
             break;
         }
-        
-        case 7: {
+
+        case 8: {
             int id = get_safe_int("调拨单ID: ", 1, 99999);
             if (confirm_action("确认入库？")) {
                 if (confirm_in_transfer(id, g_current_user_id) == 0) {
@@ -1882,8 +2195,8 @@ void show_transfer_menu(void) {
             }
             break;
         }
-        
-        case 8: {
+
+        case 9: {
             int count = 0;
             TransferOrder **list = list_transfers_by_status(-1, &count);
             
@@ -2614,7 +2927,22 @@ void show_member_menu(void) {
             print_info("当前手机: %s (直接回车跳过)", m->phone);
             get_safe_string("新手机: ", phone, sizeof(phone));
             if (strlen(phone) > 0) {
-                strncpy(m->phone, phone, sizeof(m->phone) - 1);
+                /* 如果手机号变更，需要同步更新哈希表 */
+                char old_phone[20];
+                strncpy(old_phone, m->phone, sizeof(old_phone) - 1);
+                old_phone[sizeof(old_phone) - 1] = '\0';
+
+                if (strcmp(old_phone, phone) != 0) {
+                    /* 检查新手机号是否已被其他会员占用 */
+                    if (find_member_by_phone(phone)) {
+                        print_error("手机号 %s 已被其他会员使用", phone);
+                        break;
+                    }
+                    /* 删除旧 key，插入新 key */
+                    hash_delete(g_member_phone_hash, old_phone);
+                    strncpy(m->phone, phone, sizeof(m->phone) - 1);
+                    hash_insert(g_member_phone_hash, m->phone, m);
+                }
             }
             
             update_member(m);
@@ -2627,11 +2955,11 @@ void show_member_menu(void) {
             int id = get_safe_int("输入要删除的会员ID: ", 1, 999999);
             
             if (confirm_action("确定要删除该会员？")) {
-                if (delete_member(id)) {
-                    save_members();
+                if (delete_member(id) == 0) {
+                    /* delete_member 内部已调用 save_members()，无需重复保存 */
                     print_success("会员已删除");
                 } else {
-                    print_error("删除失败");
+                    print_error("删除失败，未找到该会员");
                 }
             }
             break;

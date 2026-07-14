@@ -1,0 +1,2 @@
+# Copy to config.mk and point this at the AbyssDB source checkout.
+ABYSS_ROOT := C:/path/to/AbyssDB

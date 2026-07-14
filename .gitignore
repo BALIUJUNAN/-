@@ -1,3 +1,8 @@
 *.o
 *.exe
 .claude/
+config.mk
+.abyss-build/
+.test-build/
+*.db
+*.db.journal

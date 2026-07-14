@@ -1,14 +1,30 @@
 /**
  * @file utility.c
- * @brief 工具模块合并文件
+ * @brief 工具模块合并文件（3个子模块）
  *
- * 合并了以下模块：
- * - 小票打印 (printer)
- * - 数据看板 (dashboard)
- * - 日期解析工具
+ * 本文件合并了 3 个工具子模块：
+ *
+ * ┌─────────────────────────────────────────────────────────────────────┐
+ * │ 1. 小票打印 (printer)                                               │
+ * │    - ESC/POS 热敏打印机驱动                                          │
+ * │    - 支持 Windows（COM/LPT端口）和 Linux（USB设备）                   │
+ * │    - 打印机不可用时自动保存到文件（output/receipt_日期_单号.txt）       │
+ * │    - 打印内容：店铺信息 → 商品明细 → 合计 → 优惠 → 积分 → 找零       │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 2. 数据看板 (dashboard)                                             │
+ * │    - 今日销售额/订单数实时统计                                        │
+ * │    - 库存预警 TOP N（按库存/最低库存比例排序）                         │
+ * │    - 热销商品 TOP N（从完成订单与明细索引关联统计）                  │
+ * │    - ASCII 柱状图可视化                                              │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 3. 日期解析工具                                                      │
+ * │    - parse_date_yyyymmdd: "20260614" → time_t                       │
+ * │    - 跨平台：Windows _mkgmtime / Linux timegm                       │
+ * └─────────────────────────────────────────────────────────────────────┘
  */
 
 #include "supermarket.h"
+#include "app/sm_sales_service.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -595,30 +611,15 @@ float get_today_sales(void) {
     time_t today_start = mktime(t);
     
     float total = 0;
-    char sales_path[256];
-    snprintf(sales_path, sizeof(sales_path), "%s/sales.txt", DATA_DIR);
-    
-    FILE *fp = fopen(sales_path, "r");
-    if (fp) {
-        char line[MAX_LINE_LEN];
-        while (fgets(line, sizeof(line), fp)) {
-            trim(line);
-            if (strlen(line) == 0) continue;
-            
-            char *saveptr;
-            char *token = strtok_r(line, "|", &saveptr);
-            for (int i = 0; i < 5; i++) token = strtok_r(NULL, "|", &saveptr);
-            float final_amount = atof(token ? token : "0");
-            token = strtok_r(NULL, "|", &saveptr); int status = atoi(token ? token : "0");
-            token = strtok_r(NULL, "|", &saveptr); time_t created_at = token ? (time_t)atoll(token) : 0;
-
-            if (status == SALE_COMPLETED && created_at >= today_start) {
-                total += final_amount;
-            }
-        }
-        fclose(fp);
-    }
-    
+    Sale *sales = NULL;
+    size_t count = 0;
+    size_t i;
+    if (sm_service_sale_list_completed(&sales, &count) != SM_REPO_OK)
+        return 0;
+    for (i = 0; i < count; ++i)
+        if (sales[i].completed_at >= today_start)
+            total += sales[i].final_amount;
+    sm_service_sales_array_free(sales);
     return total;
 }
 
@@ -633,30 +634,15 @@ int get_today_orders(void) {
     t->tm_sec = 0;
     time_t today_start = mktime(t);
     
+    Sale *sales = NULL;
+    size_t sale_count = 0;
+    size_t i;
     int count = 0;
-    char sales_path[256];
-    snprintf(sales_path, sizeof(sales_path), "%s/sales.txt", DATA_DIR);
-    
-    FILE *fp = fopen(sales_path, "r");
-    if (fp) {
-        char line[MAX_LINE_LEN];
-        while (fgets(line, sizeof(line), fp)) {
-            trim(line);
-            if (strlen(line) == 0) continue;
-            
-            char *saveptr;
-            char *token = strtok_r(line, "|", &saveptr);
-            for (int i = 0; i < 6; i++) token = strtok_r(NULL, "|", &saveptr);
-            int status = atoi(token ? token : "0");
-            token = strtok_r(NULL, "|", &saveptr); time_t created_at = token ? (time_t)atoll(token) : 0;
-
-            if (status == SALE_COMPLETED && created_at >= today_start) {
-                count++;
-            }
-        }
-        fclose(fp);
-    }
-    
+    if (sm_service_sale_list_completed(&sales, &sale_count) != SM_REPO_OK)
+        return 0;
+    for (i = 0; i < sale_count; ++i)
+        if (sales[i].completed_at >= today_start) ++count;
+    sm_service_sales_array_free(sales);
     return count;
 }
 
@@ -664,27 +650,25 @@ int get_today_orders(void) {
  * 获取库存预警
  */
 void get_low_stock_alerts(int top_n) {
+    int product_count = 0;
+    Product **products = list_low_stock_products(&product_count);
     printf("\n========== 库存预警 ==========\n");
     
     typedef struct { char name[50]; int stock; int min; } StockItem;
     StockItem items[100];
     int count = 0;
     
-    for (int i = 0; i < g_product_hash->size; i++) {
-        HashNode *node = g_product_hash->buckets[i];
-        while (node) {
-            Product *prod = (Product*)node->data;
-            if (prod->status == 1 && prod->stock <= prod->min_stock) {
-                if (count < 100) {
-                    strncpy(items[count].name, prod->name, 49);
-                    items[count].stock = prod->stock;
-                    items[count].min = prod->min_stock;
-                    count++;
-                }
+    for (int i = 0; i < product_count; ++i) {
+        Product *prod = products[i];
+        if (prod->status == STATUS_ACTIVE && count < 100) {
+            strncpy(items[count].name, prod->name, 49);
+            items[count].name[49] = '\0';
+            items[count].stock = prod->stock;
+            items[count].min = prod->min_stock;
+            count++;
             }
-            node = node->next;
-        }
     }
+    free(products);
     
     // 按比例排序
     for (int i = 0; i < count - 1; i++) {
@@ -729,66 +713,43 @@ void get_top_selling_products(int top_n) {
     SellItem items[100] = {0};
     int count = 0;
     
-    char sales_path[256], item_path[256];
-    snprintf(sales_path, sizeof(sales_path), "%s/sales.txt", DATA_DIR);
-    snprintf(item_path, sizeof(item_path), "%s/sale_item.txt", DATA_DIR);
-    
-    FILE *fpi = fopen(item_path, "r");
-    if (fpi) {
-        char line[MAX_LINE_LEN];
-        while (fgets(line, sizeof(line), fpi)) {
-            trim(line);
-            if (strlen(line) == 0) continue;
-            
-            char *saveptr;
-            char *token = strtok_r(line, "|", &saveptr);
-            int item_id = atoi(token);
-            token = strtok_r(NULL, "|", &saveptr); int sale_id = atoi(token);
-            char pid[20], pname[50];
-            strncpy(pid, strtok_r(NULL, "|", &saveptr), 19);
-            strncpy(pname, strtok_r(NULL, "|", &saveptr), 49);
-            token = strtok_r(NULL, "|", &saveptr); float qty = atof(token);
-            
-            (void)item_id;
-            
-            // 检查销售单
-            FILE *fps = fopen(sales_path, "r");
-            if (fps) {
-                char sline[MAX_LINE_LEN];
-                while (fgets(sline, sizeof(sline), fps)) {
-                    trim(sline);
-                    char *inner_saveptr;
-                    char *stok = strtok_r(sline, "|", &inner_saveptr);
-                    if (atoi(stok) == sale_id) {
-                        for (int i = 0; i < 6; i++) stok = strtok_r(NULL, "|", &inner_saveptr);
-                        int status = atoi(stok);
-                        stok = strtok_r(NULL, "|", &inner_saveptr);
-                        time_t created = stok ? (time_t)atoll(stok) : 0;
-                        if (status == SALE_COMPLETED && created >= today_start) {
-                            int found = -1;
-                            for (int j = 0; j < count; j++) {
-                                if (strcmp(items[j].id, pid) == 0) {
-                                    found = j;
-                                    break;
-                                }
-                            }
-                            if (found >= 0) {
-                                items[found].qty += (int)qty;
-                            } else if (count < 100) {
-                                strcpy(items[count].id, pid);
-                                strcpy(items[count].name, pname);
-                                items[count].qty = (int)qty;
-                                count++;
-                            }
-                        }
+    Sale *sales = NULL;
+    size_t sale_count = 0;
+    size_t sale_index;
+    if (sm_service_sale_list_completed(&sales, &sale_count) == SM_REPO_OK) {
+        for (sale_index = 0; sale_index < sale_count; ++sale_index) {
+            SaleItem *sale_items = NULL;
+            size_t item_count = 0;
+            size_t item_index;
+            if (sales[sale_index].completed_at < today_start) continue;
+            if (sm_service_sale_item_list(sales[sale_index].id, &sale_items,
+                                          &item_count) != SM_REPO_OK)
+                continue;
+            for (item_index = 0; item_index < item_count; ++item_index) {
+                int found = -1;
+                int qty = (int)sale_items[item_index].quantity;
+                int j;
+                for (j = 0; j < count; ++j) {
+                    if (strcmp(items[j].id,
+                               sale_items[item_index].product_id) == 0) {
+                        found = j;
                         break;
                     }
                 }
-                fclose(fps);
+                if (found >= 0) items[found].qty += qty;
+                else if (count < 100) {
+                    snprintf(items[count].id, sizeof(items[count].id), "%s",
+                             sale_items[item_index].product_id);
+                    snprintf(items[count].name, sizeof(items[count].name), "%s",
+                             sale_items[item_index].product_name);
+                    items[count].qty = qty;
+                    ++count;
+                }
             }
+            sm_service_sales_array_free(sale_items);
         }
-        fclose(fpi);
     }
+    sm_service_sales_array_free(sales);
     
     // 排序
     for (int i = 0; i < count - 1; i++) {

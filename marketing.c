@@ -1,80 +1,261 @@
 /**
  * @file marketing.c
- * @brief 营销模块合并文件
- * 
- * 合并了以下模块：
- * - 会员管理 (member)
- * - 促销管理 (promotion)
- * - 套装管理 (combo)
- * - 批次管理 (batch)
- * - 储值卡管理 (vipcard)
+ * @brief 营销模块合并文件（5个子模块）
+ *
+ * 本文件合并了 5 个业务子模块：
+ *
+ * ┌─────────────────────────────────────────────────────────────────────┐
+ * │ 1. 会员管理 (member)                                                │
+ * │    - 会员注册/查询/编辑/删除                                         │
+ * │    - 积分系统：阶梯积分（消费越多倍率越高）、积分兑换现金               │
+ * │    - 等级系统：普通→银卡(≥1000)→金卡(≥5000)→钻石(≥20000)            │
+ * │    - 等级自动升级（基于累计消费金额）                                  │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 2. 促销管理 (promotion)                                             │
+ * │    - 5种促销类型：单品折扣/满减/第N件优惠/买M赠N/会员专属价            │
+ * │    - 促销按优先级排序，同一商品取最优折扣                              │
+ * │    - 综合折扣计算：单品促销 → 会员折扣 → 满减，三层叠加               │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 3. 套装管理 (combo)                                                 │
+ * │    - 套装 = 多个子商品的捆绑销售（独立条码、独立定价）                  │
+ * │    - 销售时自动按比例扣减子商品库存                                    │
+ * │    - 退款时自动回滚子商品库存                                         │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 4. 批次管理 (batch)                                                 │
+ * │    - 按收货日期管理商品批次（YYMMDD+序号 批号）                        │
+ * │    - 先进先出(FIFO)库存扣减                                          │
+ * │    - 临期预警（保质期≤30天自动提醒）                                  │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 5. 储值卡管理 (vipcard)                                             │
+ * │    - 储值卡创建/充值/消费/退款                                        │
+ * │    - 支付密码验证（SHA-256 哈希）                                     │
+ * │    - 绑定会员、冻结/解冻/注销                                         │
+ * │    - 交易记录查询和对账单生成                                         │
+ * └─────────────────────────────────────────────────────────────────────┘
+ *
+ * 数据存储：
+ *   member.txt         — 会员首次迁移来源（运行时使用 AbyssDB）
+ *   promotion.txt      — 促销活动表
+ *   combo.txt          — 套装主表
+ *   combo_item.txt     — 套装子商品表
+ *   Batch 已迁移到 AbyssDB，旧 batch.txt 仅作首次导入
+ *   vipcard.txt        — 储值卡表
+ *   vipcard_trans.txt  — 储值卡交易记录表
  */
 
 #include "supermarket.h"
+#include "app/sm_app_context.h"
+#include "app/sm_purchase_service.h"
+#include "app/sm_base_service.h"
+
+/* Stage 10 public stored-value-card APIs are backed by AbyssDB adapters. */
+#define create_promotion sm_legacy_create_promotion
+#define create_discount_promotion sm_legacy_create_discount_promotion
+#define create_override_promotion sm_legacy_create_override_promotion
+#define find_promotion sm_legacy_find_promotion
+#define is_promotion_valid sm_legacy_is_promotion_valid
+#define get_product_promotion sm_legacy_get_product_promotion
+#define get_order_override_promotion sm_legacy_get_order_override_promotion
+#define delete_promotion sm_legacy_delete_promotion
+#define list_promotions sm_legacy_list_promotions
+#define list_active_promotions sm_legacy_list_active_promotions
+#define load_promotions sm_legacy_load_promotions
+#define save_promotion sm_legacy_save_promotion
+#define save_all_promotions sm_legacy_save_all_promotions
+#define create_combo sm_legacy_create_combo
+#define add_combo_item sm_legacy_add_combo_item
+#define find_combo_by_id sm_legacy_find_combo_by_id
+#define find_combo_by_barcode sm_legacy_find_combo_by_barcode
+#define update_combo sm_legacy_update_combo
+#define delete_combo sm_legacy_delete_combo
+#define list_combos sm_legacy_list_combos
+#define list_active_combos sm_legacy_list_active_combos
+#define load_combos sm_legacy_load_combos
+#define save_combo sm_legacy_save_combo
+#define save_all_combos sm_legacy_save_all_combos
+#define load_combo_items sm_legacy_load_combo_items
+#define save_combo_item sm_legacy_save_combo_item
+#define load_all_combo_items sm_legacy_load_all_combo_items
+
+int sm_legacy_create_promotion(Promotion *);
+int sm_legacy_create_discount_promotion(const char *, const char *, float,
+                                        time_t, time_t);
+int sm_legacy_create_override_promotion(const char *, float, float,
+                                        time_t, time_t);
+Promotion *sm_legacy_find_promotion(int);
+int sm_legacy_is_promotion_valid(Promotion *);
+Promotion *sm_legacy_get_product_promotion(const char *);
+Promotion *sm_legacy_get_order_override_promotion(void);
+int sm_legacy_delete_promotion(int);
+Promotion **sm_legacy_list_promotions(int *);
+Promotion **sm_legacy_list_active_promotions(int *);
+int sm_legacy_load_promotions(void);
+int sm_legacy_save_promotion(Promotion *);
+int sm_legacy_save_all_promotions(void);
+int sm_legacy_create_combo(ProductCombo *);
+int sm_legacy_add_combo_item(int, ComboItem *);
+ProductCombo *sm_legacy_find_combo_by_id(int);
+ProductCombo *sm_legacy_find_combo_by_barcode(const char *);
+int sm_legacy_update_combo(ProductCombo *);
+int sm_legacy_delete_combo(int);
+ProductCombo **sm_legacy_list_combos(int *);
+ProductCombo **sm_legacy_list_active_combos(int *);
+int sm_legacy_load_combos(void);
+int sm_legacy_save_combo(ProductCombo *);
+int sm_legacy_save_all_combos(void);
+int sm_legacy_load_combo_items(void);
+int sm_legacy_save_combo_item(int, ComboItem *);
+int sm_legacy_load_all_combo_items(void);
+#define create_vip_card sm_legacy_create_vip_card
+#define find_vip_card sm_legacy_find_vip_card
+#define find_vip_card_by_member sm_legacy_find_vip_card_by_member
+#define verify_vip_card_password sm_legacy_verify_vip_card_password
+#define change_vip_card_password sm_legacy_change_vip_card_password
+#define bind_vip_card_member sm_legacy_bind_vip_card_member
+#define freeze_vip_card sm_legacy_freeze_vip_card
+#define unfreeze_vip_card sm_legacy_unfreeze_vip_card
+#define cancel_vip_card sm_legacy_cancel_vip_card
+#define set_vip_card_expired sm_legacy_set_vip_card_expired
+#define list_vip_cards sm_legacy_list_vip_cards
+#define list_member_vip_cards sm_legacy_list_member_vip_cards
+#define recharge_vip_card sm_legacy_recharge_vip_card
+#define consume_vip_card sm_legacy_consume_vip_card
+#define refund_vip_card sm_legacy_refund_vip_card
+#define query_vip_card_transactions sm_legacy_query_vip_card_transactions
+#define query_member_vip_transactions sm_legacy_query_member_vip_transactions
+#define print_vip_card_summary sm_legacy_print_vip_card_summary
+#define generate_vip_card_statement sm_legacy_generate_vip_card_statement
+#define load_vip_cards sm_legacy_load_vip_cards
+#define save_vip_card sm_legacy_save_vip_card
+#define save_all_vip_cards sm_legacy_save_all_vip_cards
+#define load_vip_card_transactions sm_legacy_load_vip_card_transactions
+#define save_vip_card_transaction sm_legacy_save_vip_card_transaction
+
+int sm_legacy_save_vip_card(VipCard *card);
+int sm_legacy_save_all_vip_cards(void);
+int sm_legacy_save_vip_card_transaction(VipCardTransaction *transaction);
 
 // ==================== 会员模块 ====================
 
-static VipCardTransaction *g_vip_card_transactions = NULL;
+static VipCardTransaction *g_vip_card_transactions = NULL;  // 储值卡交易记录链表
+
+static Member *find_cached_member_by_id(int id) {
+    Member *member = g_members;
+    while (member) {
+        if (member->id == id) return member;
+        member = member->next;
+    }
+    return NULL;
+}
+
+static void remove_member_phone_aliases(Member *member) {
+    int i;
+    if (!g_member_phone_hash || !member) return;
+    for (i = 0; i < g_member_phone_hash->size; ++i) {
+        HashNode *node = g_member_phone_hash->buckets[i];
+        while (node) {
+            HashNode *next = node->next;
+            if (node->data == member) (void)hash_delete(g_member_phone_hash, node->key);
+            node = next;
+        }
+    }
+}
+
+static Member *cache_member(const Member *value) {
+    Member *cached;
+    Member *next;
+    if (!value || value->id <= 0) return NULL;
+    cached = find_cached_member_by_id(value->id);
+    if (cached) {
+        next = cached->next;
+        remove_member_phone_aliases(cached);
+        if (cached != value) *cached = *value;
+        cached->next = next;
+    } else {
+        cached = (Member *)malloc(sizeof(*cached));
+        if (!cached) return NULL;
+        *cached = *value;
+        cached->next = g_members;
+        g_members = cached;
+    }
+    if (hash_insert(g_member_phone_hash, cached->phone, cached) != 0)
+        return NULL;
+    return cached;
+}
 
 /**
  * 添加会员
  */
 int add_member(const char *phone, const char *name) {
+    Member value;
+    Member *member;
+    if (!phone || !name) return -1;
     if (find_member_by_phone(phone)) {
         printf("错误: 手机号 %s 已注册\n", phone);
         return -1;
     }
-    
-    Member *member = (Member*)malloc(sizeof(Member));
-    if (!member) return -1;
-    
-    // 使用独立的会员ID计数器
-    member->id = ++g_member_id_counter;
-    strncpy(member->phone, phone, 19);
-    strncpy(member->name, name, 49);
-    member->level = MEMBER_LEVEL_NORMAL;
-    member->points = 0;
-    member->total_consume = 0;
-    member->created_at = time(NULL);
-    member->updated_at = member->created_at;
-    member->last_consume_at = 0;
-    
-    hash_insert(g_member_phone_hash, phone, member);
-    
-    member->next = g_members;
-    g_members = member;
-    
-    save_member_record(member);
-    
-    printf("会员注册成功! 会员ID: %d\n", member->id);
-    return member->id;
+    memset(&value, 0, sizeof(value));
+    strncpy(value.phone, phone, sizeof(value.phone) - 1);
+    strncpy(value.name, name, sizeof(value.name) - 1);
+    value.level = MEMBER_LEVEL_NORMAL;
+    value.created_at = time(NULL);
+    value.updated_at = value.created_at;
+    if (sm_service_member_create(&value) != SM_REPO_OK) return -1;
+    member = cache_member(&value);
+    if (value.id > g_member_id_counter) g_member_id_counter = value.id;
+    printf("会员注册成功! 会员ID: %d\n",
+           member ? member->id : value.id);
+    return value.id;
 }
 
 /**
  * 查找会员（按手机号）
  */
 Member* find_member_by_phone(const char *phone) {
-    return (Member*)hash_search(g_member_phone_hash, phone);
+    Member value;
+    Member *cached;
+    if (!phone || phone[0] == '\0') return NULL;
+    cached = (Member *)hash_search(g_member_phone_hash, phone);
+    if (cached) return cached;
+    if (sm_service_member_get_by_phone(phone, &value) != SM_REPO_OK)
+        return NULL;
+    return cache_member(&value);
 }
 
 /**
  * 查找会员（按ID）
  */
 Member* find_member_by_id(int id) {
-    Member *m = g_members;
-    while (m) {
-        if (m->id == id) return m;
-        m = m->next;
-    }
-    return NULL;
+    Member value;
+    Member *cached;
+    if (id <= 0) return NULL;
+    cached = find_cached_member_by_id(id);
+    if (cached) return cached;
+    if (sm_service_member_get(id, &value) != SM_REPO_OK) return NULL;
+    return cache_member(&value);
+}
+
+Member* refresh_member_by_id(int id) {
+    Member value;
+    if (id <= 0 || sm_service_member_get(id, &value) != SM_REPO_OK)
+        return NULL;
+    return cache_member(&value);
 }
 
 /**
  * 更新会员信息
  */
 int update_member(Member *member) {
+    Member persisted;
+    if (!member || member->id <= 0) return -1;
     member->updated_at = time(NULL);
-    return save_members();
+    if (sm_service_member_update(member) != SM_REPO_OK) {
+        if (sm_service_member_get(member->id, &persisted) == SM_REPO_OK)
+            (void)cache_member(&persisted);
+        return -1;
+    }
+    (void)cache_member(member);
+    return 0;
 }
 
 /**
@@ -82,17 +263,18 @@ int update_member(Member *member) {
  */
 int delete_member(int id) {
     Member **prev = &g_members;
+    if (sm_service_member_delete(id) != SM_REPO_OK) return -1;
     while (*prev) {
         if ((*prev)->id == id) {
             Member *to_free = *prev;
-            hash_delete(g_member_phone_hash, to_free->phone);
+            remove_member_phone_aliases(to_free);
             *prev = (*prev)->next;
             free(to_free);
-            return save_members();
+            return 0;
         }
         prev = &(*prev)->next;
     }
-    return -1;
+    return 0;
 }
 
 /**
@@ -191,31 +373,44 @@ void upgrade_member_level(Member *member) {
  * 增加积分
  */
 /**
- * 计算阶梯积分
- * 100元以下：1元=1积分
- * 100-500元：1元=2积分
- * 500-1000元：1元=3积分
- * 1000元以上：1元=5积分
+ * 计算阶梯积分（分段累加制度）
+ *
+ * 阶梯规则：
+ *   0 ~ 100 元：  每1元 = 1积分  (基础倍率)
+ *   100 ~ 500 元：每1元 = 2积分  (一阶倍率)
+ *   500 ~ 1000元：每1元 = 3积分  (二阶倍率)
+ *   1000元以上：  每1元 = 5积分  (三阶倍率)
+ *
+ * 例：消费800元 = 100×1 + 400×2 + 300×3 = 100+800+900 = 1800积分
+ *
+ * @param amount 消费金额
+ * @return 获得的积分数
  */
 int calculate_ladder_points(float amount) {
     int points = 0;
-    
-    if (amount >= POINTS_THRESHOLD_1000) {
-        // 1000元以上：全部按5倍积分
-        points = (int)(amount * POINTS_PER_YUAN_LEVEL3);
-    } else if (amount >= POINTS_THRESHOLD_500) {
-        // 500-1000元：前500元按3倍，后面的按5倍
-        points = (int)(POINTS_THRESHOLD_500 * POINTS_PER_YUAN_LEVEL2);
-        points += (int)((amount - POINTS_THRESHOLD_500) * POINTS_PER_YUAN_LEVEL3);
-    } else if (amount >= POINTS_THRESHOLD_100) {
-        // 100-500元：前100元按2倍，后面的按3倍
-        points = (int)(POINTS_THRESHOLD_100 * POINTS_PER_YUAN_LEVEL1);
-        points += (int)((amount - POINTS_THRESHOLD_100) * POINTS_PER_YUAN_LEVEL2);
-    } else {
-        // 100元以下：按基础积分
+
+    if (amount <= 0) return 0;
+
+    if (amount <= POINTS_THRESHOLD_100) {
+        /* 0~100元：1元=1积分 */
         points = (int)(amount * POINTS_PER_YUAN_BASE);
+    } else if (amount <= POINTS_THRESHOLD_500) {
+        /* 100~500元：前100元按1倍，超出部分按2倍 */
+        points = (int)(POINTS_THRESHOLD_100 * POINTS_PER_YUAN_BASE);
+        points += (int)((amount - POINTS_THRESHOLD_100) * POINTS_PER_YUAN_LEVEL1);
+    } else if (amount <= POINTS_THRESHOLD_1000) {
+        /* 500~1000元：前100元1倍 + 100~500元2倍 + 超出部分3倍 */
+        points = (int)(POINTS_THRESHOLD_100 * POINTS_PER_YUAN_BASE);
+        points += (int)((POINTS_THRESHOLD_500 - POINTS_THRESHOLD_100) * POINTS_PER_YUAN_LEVEL1);
+        points += (int)((amount - POINTS_THRESHOLD_500) * POINTS_PER_YUAN_LEVEL2);
+    } else {
+        /* 1000元以上：前100元1倍 + 100~500元2倍 + 500~1000元3倍 + 超出部分5倍 */
+        points = (int)(POINTS_THRESHOLD_100 * POINTS_PER_YUAN_BASE);
+        points += (int)((POINTS_THRESHOLD_500 - POINTS_THRESHOLD_100) * POINTS_PER_YUAN_LEVEL1);
+        points += (int)((POINTS_THRESHOLD_1000 - POINTS_THRESHOLD_500) * POINTS_PER_YUAN_LEVEL2);
+        points += (int)((amount - POINTS_THRESHOLD_1000) * POINTS_PER_YUAN_LEVEL3);
     }
-    
+
     return points;
 }
 
@@ -267,21 +462,32 @@ void member_consume(Member *member, float amount) {
  * 列出所有会员
  */
 Member** list_members(int *count) {
+    Member *values = NULL;
     Member **list = NULL;
+    size_t value_count = 0;
+    size_t i;
+    if (!count) return NULL;
     *count = 0;
-    int capacity = 0;
-
-    Member *m = g_members;
-    while (m) {
-        if (*count >= capacity) {
-            capacity = capacity == 0 ? 16 : capacity * 2;
-            list = (Member**)realloc(list, capacity * sizeof(Member*));
+    if (sm_service_member_list(&values, &value_count) != SM_REPO_OK ||
+        value_count > 2147483647u)
+        return NULL;
+    if (value_count != 0) {
+        list = (Member **)calloc(value_count, sizeof(*list));
+        if (!list) {
+            sm_service_array_free(values);
+            return NULL;
         }
-        list[*count] = m;
-        (*count)++;
-        m = m->next;
     }
-
+    for (i = 0; i < value_count; ++i) {
+        list[i] = cache_member(&values[i]);
+        if (!list[i]) {
+            free(list);
+            sm_service_array_free(values);
+            return NULL;
+        }
+    }
+    sm_service_array_free(values);
+    *count = (int)value_count;
     return list;
 }
 
@@ -291,12 +497,16 @@ Member** list_members(int *count) {
 void check_expiring_points(void) {
     time_t now = time(NULL);
     time_t one_year = 365 * 24 * 3600;
+    Member **members;
+    int member_count = 0;
+    int i;
     int count = 0;
     
     printf("\n========== 积分即将过期提醒 ==========\n");
     
-    Member *m = g_members;
-    while (m) {
+    members = list_members(&member_count);
+    for (i = 0; i < member_count; ++i) {
+        Member *m = members[i];
         if (m->points > 0 && m->last_consume_at > 0) {
             time_t diff = now - m->last_consume_at;
             if (diff > one_year * 2) {
@@ -305,8 +515,8 @@ void check_expiring_points(void) {
                 count++;
             }
         }
-        m = m->next;
     }
+    free(members);
     
     if (count == 0) {
         printf("无即将过期的积分\n");
@@ -318,71 +528,6 @@ void check_expiring_points(void) {
  * 加载会员数据
  */
 int load_members(void) {
-    char filepath[256];
-    snprintf(filepath, sizeof(filepath), "%s/member.txt", DATA_DIR);
-    
-    FILE *fp = fopen(filepath, "r");
-    if (!fp) return 0;
-    
-    char line[MAX_LINE_LEN];
-    while (fgets(line, sizeof(line), fp)) {
-        trim(line);
-        if (strlen(line) == 0) continue;
-        
-        // 统计字段数量
-        int field_count = 0;
-        char *p = line;
-        while (*p) {
-            if (*p == '|') field_count++;
-            p++;
-        }
-        field_count++; // 最后一个字段
-        
-        // 确保有足够的字段
-        if (field_count < 9) {
-            printf("[警告] 会员数据格式错误，跳过: %s\n", line);
-            continue;
-        }
-        
-        Member *m = (Member*)malloc(sizeof(Member));
-        if (!m) {
-            printf("[错误] 分配会员内存失败\n");
-            continue;
-        }
-        memset(m, 0, sizeof(Member));
-        
-        char *token;
-        char *saveptr;
-        if (!(token = strtok_r(line, "|", &saveptr))) { free(m); continue; }
-        m->id = atoi(token);
-        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
-        strncpy(m->phone, token, sizeof(m->phone) - 1);
-        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
-        strncpy(m->name, token, sizeof(m->name) - 1);
-        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
-        m->level = atoi(token);
-        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
-        m->points = atoi(token);
-        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
-        m->total_consume = atof(token);
-        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
-        m->created_at = (time_t)atoll(token);
-        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
-        m->updated_at = (time_t)atoll(token);
-        if (!(token = strtok_r(NULL, "|", &saveptr))) { free(m); continue; }
-        m->last_consume_at = (time_t)atoll(token);
-        
-        hash_insert(g_member_phone_hash, m->phone, m);
-        m->next = g_members;
-        g_members = m;
-        
-        // 更新会员专用计数器
-        if (m->id > g_member_id_counter) {
-            g_member_id_counter = m->id;
-        }
-    }
-    
-    fclose(fp);
     return 0;
 }
 
@@ -390,62 +535,21 @@ int load_members(void) {
  * 保存会员数据 - 原子写入
  */
 int save_members(void) {
-    char filepath[256];
-    char *buffer = NULL;
-    size_t bufsize = 0, remaining = 0;
-
-    snprintf(filepath, sizeof(filepath), "%s/member.txt", DATA_DIR);
-
-    bufsize = 65536;
-    buffer = (char*)malloc(bufsize);
-    if (!buffer) return -1;
-    char *pos = buffer;
-    remaining = bufsize;
-
     Member *m = g_members;
     while (m) {
-        int written = snprintf(pos, remaining, "%d|%s|%s|%d|%d|%.2f|%lld|%lld|%lld\n",
-            m->id, m->phone, m->name, m->level, m->points,
-            m->total_consume, (long long)m->created_at,
-            (long long)m->updated_at, (long long)m->last_consume_at);
-
-        if (written >= (int)remaining) {
-            size_t offset = pos - buffer;
-            bufsize *= 2;
-            char *tmp_buf = (char*)realloc(buffer, bufsize);
-            if (!tmp_buf) { free(buffer); return -1; }
-            buffer = tmp_buf;
-            pos = buffer + offset;
-            remaining = bufsize - offset;
-            written = snprintf(pos, remaining, "%d|%s|%s|%d|%d|%.2f|%lld|%lld|%lld\n",
-                m->id, m->phone, m->name, m->level, m->points,
-                m->total_consume, (long long)m->created_at,
-                (long long)m->updated_at, (long long)m->last_consume_at);
-        }
-        pos += written;
-        remaining -= written;
-        m = m->next;
+        Member *next = m->next;
+        if (update_member(m) != 0) return -1;
+        m = next;
     }
-
-    int result = atomic_write(filepath, buffer);
-    free(buffer);
-    return result;
+    return 0;
 }
 
 /**
  * 保存单个会员记录 - 原子追加
  */
 int save_member_record(Member *member) {
-    char filepath[256];
-    char content[512];
-
-    snprintf(filepath, sizeof(filepath), "%s/member.txt", DATA_DIR);
-    snprintf(content, sizeof(content), "%d|%s|%s|%d|%d|%.2f|%lld|%lld|%lld",
-        member->id, member->phone, member->name, member->level, member->points,
-        member->total_consume, (long long)member->created_at,
-        (long long)member->updated_at, (long long)member->last_consume_at);
-
-    return atomic_append(filepath, content);
+    if (!member || member->id <= 0) return -1;
+    return update_member(member);
 }
 
 // ==================== 促销模块 ====================
@@ -1425,20 +1529,28 @@ int load_combos(void) {
     while (fgets(line, sizeof(line), fp)) {
         trim(line);
         if (strlen(line) == 0) continue;
-        
+
         ProductCombo *combo = (ProductCombo*)malloc(sizeof(ProductCombo));
         memset(combo, 0, sizeof(ProductCombo));
-        
+
         char *saveptr;
-        char *token = strtok_r(line, "|", &saveptr);
-        combo->id = atoi(token);
-        strncpy(combo->name, strtok_r(NULL, "|", &saveptr), 99);
-        strncpy(combo->barcode, strtok_r(NULL, "|", &saveptr), 29);
-        combo->price = atof(strtok_r(NULL, "|", &saveptr));
-        combo->cost = atof(strtok_r(NULL, "|", &saveptr));
-        combo->status = atoi(strtok_r(NULL, "|", &saveptr));
-        combo->created_at = (time_t)atoll(strtok_r(NULL, "|", &saveptr));
-        combo->updated_at = (time_t)atoll(strtok_r(NULL, "|", &saveptr));
+        char *token;
+        token = strtok_r(line, "|", &saveptr);
+        combo->id = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr);
+        strncpy(combo->name, token ? token : "", 99);
+        token = strtok_r(NULL, "|", &saveptr);
+        strncpy(combo->barcode, token ? token : "", 29);
+        token = strtok_r(NULL, "|", &saveptr);
+        combo->price = token ? atof(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr);
+        combo->cost = token ? atof(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr);
+        combo->status = token ? atoi(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr);
+        combo->created_at = token ? (time_t)atoll(token) : 0;
+        token = strtok_r(NULL, "|", &saveptr);
+        combo->updated_at = token ? (time_t)atoll(token) : 0;
         
         combo->next = g_combos;
         g_combos = combo;
@@ -1622,29 +1734,28 @@ const char* get_expiry_category(int days) {
  * 创建批次记录
  */
 char* create_batch(const char *product_id, const char *product_name,
-                  float quantity, float price,
-                  time_t production_date, int expiry_days, int supplier_id) {
-    
-    Batch *batch = (Batch*)malloc(sizeof(Batch));
+                   float quantity, float price,
+                   time_t production_date, int expiry_days, int supplier_id) {
+    Batch value;
+    Batch *batch;
+    memset(&value, 0, sizeof(value));
+    if (!product_id || !product_name || quantity <= 0 || price < 0 ||
+        production_date < 0 || expiry_days < 0 || supplier_id < 0)
+        return NULL;
+    snprintf(value.product_id, sizeof(value.product_id), "%s", product_id);
+    snprintf(value.product_name, sizeof(value.product_name), "%s", product_name);
+    value.quantity = value.initial_quantity = quantity;
+    value.price = price;
+    value.production_date = production_date;
+    value.received_date = value.created_at = time(NULL);
+    value.expiry_date = expiry_days > 0
+                            ? production_date + (time_t)expiry_days * 24 * 3600
+                            : 0;
+    value.supplier_id = supplier_id;
+    if (sm_service_batch_create(&value) != SM_REPO_OK) return NULL;
+    batch = (Batch*)malloc(sizeof(Batch));
     if (!batch) return NULL;
-    
-    generate_batch_no(product_id, batch->batch_no);
-    strncpy(batch->product_id, product_id, MAX_ID_LEN - 1);
-    strncpy(batch->product_name, product_name, MAX_NAME_LEN - 1);
-    batch->quantity = quantity;
-    batch->initial_quantity = quantity;
-    batch->price = price;
-    batch->production_date = production_date;
-    batch->received_date = time(NULL);
-    
-    if (expiry_days > 0) {
-        batch->expiry_date = production_date + expiry_days * 24 * 3600;
-    } else {
-        batch->expiry_date = 0;
-    }
-    
-    batch->supplier_id = supplier_id;
-    batch->created_at = batch->received_date;
+    *batch = value;
     
     Batch **prev = &g_batches;
     while (*prev && (*prev)->received_date <= batch->received_date) {
@@ -1652,8 +1763,6 @@ char* create_batch(const char *product_id, const char *product_name,
     }
     batch->next = *prev;
     *prev = batch;
-    
-    save_batch(batch);
     
     printf("批次创建成功: %s, 商品: %s, 数量: %.2f, 单价: ¥%.2f\n",
            batch->batch_no, product_name, quantity, price);
@@ -1701,32 +1810,15 @@ Batch** list_product_batches(const char *product_id, int *count) {
  * 先进先出扣库存
  */
 float deduct_batch_stock(const char *product_id, float quantity, int operator_id) {
-    float remaining = quantity;
     float deducted = 0;
-    
-    Batch *b = g_batches;
-    while (b && remaining > 0) {
-        if (strcmp(b->product_id, product_id) == 0 && b->quantity > 0) {
-            float deduct = (b->quantity >= remaining) ? remaining : b->quantity;
-            b->quantity -= deduct;
-            remaining -= deduct;
-            deducted += deduct;
-            
-            Product *prod = find_product_by_id(product_id);
-            if (prod) {
-                record_stock_log(product_id, "批次出库", deduct,
-                               (int)(prod->stock - deducted + remaining),
-                               (int)(prod->stock - deducted),
-                               operator_id, b->batch_no);
-            }
-        }
-        b = b->next;
-    }
-    
-    if (remaining > 0) {
+    if (sm_service_batch_deduct_fifo(product_id, quantity,
+                                     (uint64_t)operator_id, time(NULL),
+                                     &deducted) != SM_REPO_OK) {
         printf("[警告] 批次库存不足，需要 %.2f，实际扣减 %.2f\n", quantity, deducted);
+        return 0;
     }
-    
+    (void)load_batches();
+    (void)refresh_product_by_id(product_id);
     return deducted;
 }
 
@@ -1734,13 +1826,14 @@ float deduct_batch_stock(const char *product_id, float quantity, int operator_id
  * 增加批次库存
  */
 int add_batch_stock(const char *batch_no, float quantity) {
-    Batch *b = find_batch(batch_no);
-    if (!b) return -1;
-    
-    b->quantity += quantity;
-    b->initial_quantity += quantity;
-    
-    return 0;
+    Batch value;
+    if (!batch_no || quantity <= 0 ||
+        sm_service_batch_get(batch_no, &value) != SM_REPO_OK)
+        return -1;
+    value.quantity += quantity;
+    value.initial_quantity += quantity;
+    if (sm_service_batch_update(&value) != SM_REPO_OK) return -1;
+    return load_batches();
 }
 
 /**
@@ -1808,54 +1901,22 @@ Batch** list_expiring_batches(int days, int *count) {
  * 加载批次数据
  */
 int load_batches(void) {
-    char filepath[256];
-    snprintf(filepath, sizeof(filepath), "%s/batch.txt", DATA_DIR);
-    
-    FILE *fp = fopen(filepath, "r");
-    if (!fp) return 0;
-    
-    char line[MAX_LINE_LEN];
-    while (fgets(line, sizeof(line), fp)) {
-        trim(line);
-        if (strlen(line) == 0) continue;
-        
-        Batch *b = (Batch*)malloc(sizeof(Batch));
-        memset(b, 0, sizeof(Batch));
-
-        char *token;
-        char *saveptr;
-        token = strtok_r(line, "|", &saveptr);
-        strcpy(b->batch_no, token ? token : "");
-        token = strtok_r(NULL, "|", &saveptr);
-        strcpy(b->product_id, token ? token : "");
-        token = strtok_r(NULL, "|", &saveptr);
-        strcpy(b->product_name, token ? token : "");
-        token = strtok_r(NULL, "|", &saveptr);
-        b->quantity = token ? atof(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr);
-        b->initial_quantity = token ? atof(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr);
-        b->price = token ? atof(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr);
-        b->production_date = token ? (time_t)atoll(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr);
-        b->expiry_date = token ? (time_t)atoll(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr);
-        b->received_date = token ? (time_t)atoll(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr);
-        b->supplier_id = token ? atoi(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr);
-        b->created_at = token ? (time_t)atoll(token) : 0;
-        
-        Batch **prev = &g_batches;
-        while (*prev && (*prev)->received_date <= b->received_date) {
-            prev = &(*prev)->next;
-        }
-        b->next = *prev;
-        *prev = b;
+    Batch *values = NULL;
+    size_t count = 0, i;
+    while (g_batches) { Batch *old = g_batches; g_batches = old->next; free(old); }
+    if (sm_service_batch_list(NULL, 0, &values, &count) != SM_REPO_OK)
+        return -1;
+    for (i = 0; i < count; ++i) {
+        Batch *node = malloc(sizeof(*node));
+        Batch **link;
+        if (!node) { sm_service_purchase_array_free(values); return -1; }
+        *node = values[i];
+        link = &g_batches;
+        while (*link && (*link)->received_date <= node->received_date)
+            link = &(*link)->next;
+        node->next = *link; *link = node;
     }
-    
-    fclose(fp);
+    sm_service_purchase_array_free(values);
     return 0;
 }
 
@@ -1863,72 +1924,14 @@ int load_batches(void) {
  * 保存批次 - 原子追加
  */
 int save_batch(Batch *batch) {
-    char filepath[256];
-    char content[1024];
-    
-    snprintf(filepath, sizeof(filepath), "%s/batch.txt", DATA_DIR);
-    
-    snprintf(content, sizeof(content),
-        "%s|%s|%s|%.2f|%.2f|%.2f|%lld|%lld|%lld|%d|%lld",
-        batch->batch_no, batch->product_id, batch->product_name,
-        batch->quantity, batch->initial_quantity, batch->price,
-        (long long)batch->production_date, (long long)batch->expiry_date,
-        (long long)batch->received_date, batch->supplier_id,
-        (long long)batch->created_at);
-    
-    return atomic_append(filepath, content);
+    return batch && sm_service_batch_update(batch) == SM_REPO_OK ? 0 : -1;
 }
 
 /**
  * 保存所有批次 - 原子写入
  */
 int save_all_batches(void) {
-    char filepath[256];
-    char *buffer = NULL;
-    size_t bufsize = 0, remaining = 0;
-
-    snprintf(filepath, sizeof(filepath), "%s/batch.txt", DATA_DIR);
-
-    bufsize = 65536;
-    buffer = (char*)malloc(bufsize);
-    if (!buffer) return -1;
-    char *pos = buffer;
-    remaining = bufsize;
-
-    Batch *b = g_batches;
-    while (b) {
-        int written = snprintf(pos, remaining,
-            "%s|%s|%s|%.2f|%.2f|%.2f|%lld|%lld|%lld|%d|%lld\n",
-            b->batch_no, b->product_id, b->product_name,
-            b->quantity, b->initial_quantity, b->price,
-            (long long)b->production_date, (long long)b->expiry_date,
-            (long long)b->received_date, b->supplier_id,
-            (long long)b->created_at);
-
-        if (written >= (int)remaining) {
-            size_t offset = pos - buffer;
-            bufsize *= 2;
-            char *tmp_buf = (char*)realloc(buffer, bufsize);
-            if (!tmp_buf) { free(buffer); return -1; }
-            buffer = tmp_buf;
-            pos = buffer + offset;
-            remaining = bufsize - offset;
-            written = snprintf(pos, remaining,
-                "%s|%s|%s|%.2f|%.2f|%.2f|%lld|%lld|%lld|%d|%lld\n",
-                b->batch_no, b->product_id, b->product_name,
-                b->quantity, b->initial_quantity, b->price,
-                (long long)b->production_date, (long long)b->expiry_date,
-                (long long)b->received_date, b->supplier_id,
-                (long long)b->created_at);
-        }
-        pos += written;
-        remaining -= written;
-        b = b->next;
-    }
-
-    int result = atomic_write(filepath, buffer);
-    free(buffer);
-    return result;
+    return sm_app_repository() ? 0 : -1;
 }
 
 // ==================== 储值卡模块 ====================

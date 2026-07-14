@@ -1,20 +1,140 @@
 /**
  * @file store_ops.c
- * @brief 门店运营模块合并文件
- * 
- * 合并了以下模块：
- * - 门店管理 (store)
- * - 库存调拨 (transfer)
- * - 供应商结算 (supplier_settlement)
+ * @brief 门店运营模块合并文件（3个子模块）
+ *
+ * 本文件合并了 3 个业务子模块：
+ *
+ * ┌─────────────────────────────────────────────────────────────────────┐
+ * │ 1. 门店管理 (store)                                                 │
+ * │    - 门店 CRUD（名称、地址、店长、状态）                               │
+ * │    - 门店库存管理（按门店+商品维护独立库存）                            │
+ * │    - 库存变动日志记录                                                │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 2. 库存调拨 (transfer)                                              │
+ * │    - 调拨流程：创建 → 审批 → 出库(扣源门店库存) → 入库(加目标门店库存)  │
+ * │    - 状态机：待出库 → 已出库 → 已完成 / 已拒绝 / 已取消               │
+ * │    - 每个状态变更都记录事务日志                                       │
+ * ├─────────────────────────────────────────────────────────────────────┤
+ * │ 3. 供应商结算 (supplier_settlement)                                  │
+ * │    - 供应商财务信息管理（账期、评级）                                  │
+ * │    - 应付账款：采购完成自动生成，支持手动创建                          │
+ * │    - 付款操作：支持部分付款，自动判断全部结清                          │
+ * │    - 按供应商批量结算、对账单生成                                     │
+ * └─────────────────────────────────────────────────────────────────────┘
+ *
+ * 数据存储：
+ *   store.txt            — 门店主表
+ *   store_stock.txt      — 门店库存表
+ *   transfer.txt         — 调拨单主表
+ *   transfer_item.txt    — 调拨明细表
+ *   supplier_finance.txt — 供应商财务表
+ *   payable.txt          — 应付账款表
+ *   payment_record.txt   — 付款记录表
  */
 
 #include "supermarket.h"
 
+/* Stage 11 public store and transfer APIs are backed by AbyssDB. */
+#define create_store sm_legacy_create_store
+#define find_store_by_id sm_legacy_find_store_by_id
+#define find_store_by_name sm_legacy_find_store_by_name
+#define update_store sm_legacy_update_store
+#define delete_store sm_legacy_delete_store
+#define list_stores sm_legacy_list_stores
+#define list_active_stores sm_legacy_list_active_stores
+#define get_store_stock sm_legacy_get_store_stock
+#define set_store_stock sm_legacy_set_store_stock
+#define add_store_stock sm_legacy_add_store_stock
+#define reduce_store_stock sm_legacy_reduce_store_stock
+#define get_product_all_stores sm_legacy_get_product_all_stores
+#define load_stores sm_legacy_load_stores
+#define save_store sm_legacy_save_store
+#define save_all_stores sm_legacy_save_all_stores
+#define load_store_stocks sm_legacy_load_store_stocks
+#define save_store_stock sm_legacy_save_store_stock
+#define save_all_store_stocks sm_legacy_save_all_store_stocks
+#define create_transfer_order sm_legacy_create_transfer_order
+#define add_transfer_item sm_legacy_add_transfer_item
+#define find_transfer_order sm_legacy_find_transfer_order
+#define approve_transfer sm_legacy_approve_transfer
+#define reject_transfer sm_legacy_reject_transfer
+#define confirm_out_transfer sm_legacy_confirm_out_transfer
+#define confirm_in_transfer sm_legacy_confirm_in_transfer
+#define cancel_transfer sm_legacy_cancel_transfer
+#define list_transfers_by_status sm_legacy_list_transfers_by_status
+#define list_transfers_by_store sm_legacy_list_transfers_by_store
+#define load_transfers sm_legacy_load_transfers
+#define load_transfer_items sm_legacy_load_transfer_items
+#define save_transfer_order sm_legacy_save_transfer_order
+#define save_all_transfers sm_legacy_save_all_transfers
+#define save_transfer_item sm_legacy_save_transfer_item
+
+int sm_legacy_create_store(Store *);
+Store *sm_legacy_find_store_by_id(int);
+Store *sm_legacy_find_store_by_name(const char *);
+int sm_legacy_update_store(Store *);
+int sm_legacy_delete_store(int);
+Store **sm_legacy_list_stores(int *);
+Store **sm_legacy_list_active_stores(int *);
+int sm_legacy_get_store_stock(int, const char *);
+int sm_legacy_set_store_stock(int, const char *, int, int);
+int sm_legacy_add_store_stock(int, const char *, int, int, const char *);
+int sm_legacy_reduce_store_stock(int, const char *, int, int, const char *);
+StoreStock **sm_legacy_get_product_all_stores(const char *, int *);
+int sm_legacy_load_stores(void);
+int sm_legacy_save_store(Store *);
+int sm_legacy_save_all_stores(void);
+int sm_legacy_load_store_stocks(void);
+int sm_legacy_save_store_stock(StoreStock *);
+int sm_legacy_save_all_store_stocks(void);
+int sm_legacy_create_transfer_order(int, int, int, const char *);
+int sm_legacy_add_transfer_item(int, const char *, int);
+TransferOrder *sm_legacy_find_transfer_order(int);
+int sm_legacy_approve_transfer(int, int);
+int sm_legacy_reject_transfer(int, int, const char *);
+int sm_legacy_confirm_out_transfer(int, int);
+int sm_legacy_confirm_in_transfer(int, int);
+int sm_legacy_cancel_transfer(int, int);
+TransferOrder **sm_legacy_list_transfers_by_status(int, int *);
+TransferOrder **sm_legacy_list_transfers_by_store(int, int *);
+int sm_legacy_load_transfers(void);
+int sm_legacy_load_transfer_items(void);
+int sm_legacy_save_transfer_order(TransferOrder *);
+int sm_legacy_save_all_transfers(void);
+int sm_legacy_save_transfer_item(TransferItem *);
+
+/* Stage 9 keeps the former text implementation available under private
+ * compatibility symbols while the public API is implemented by AbyssDB. */
+#define get_supplier_finance sm_legacy_get_supplier_finance
+#define update_supplier_finance sm_legacy_update_supplier_finance
+#define list_supplier_finances sm_legacy_list_supplier_finances
+#define generate_payable sm_legacy_generate_payable
+#define create_payable sm_legacy_create_payable
+#define find_payable sm_legacy_find_payable
+#define list_payables_by_supplier sm_legacy_list_payables_by_supplier
+#define list_pending_payables sm_legacy_list_pending_payables
+#define record_payment sm_legacy_record_payment
+#define settle_supplier sm_legacy_settle_supplier
+#define list_payment_records sm_legacy_list_payment_records
+#define list_supplier_payment_records sm_legacy_list_supplier_payment_records
+#define generate_supplier_statement sm_legacy_generate_supplier_statement
+#define print_payables_summary sm_legacy_print_payables_summary
+#define load_supplier_finances sm_legacy_load_supplier_finances
+#define save_supplier_finance sm_legacy_save_supplier_finance
+#define load_payables sm_legacy_load_payables
+#define save_payable sm_legacy_save_payable
+#define load_payment_records sm_legacy_load_payment_records
+#define save_payment_record sm_legacy_save_payment_record
+
+int sm_legacy_save_supplier_finance(SupplierFinance *fin);
+int sm_legacy_save_payable(Payable *payable);
+int sm_legacy_save_payment_record(PaymentRecord *record);
+
 // ==================== 门店模块 ====================
 
 // ==================== 全局变量 ====================
-static Store *g_stores = NULL;
-static StoreStock *g_store_stocks = NULL;
+static Store *g_stores = NULL;          // 门店链表
+static StoreStock *g_store_stocks = NULL; // 门店库存链表（store_id + product_id 联合唯一）
 
 // ==================== 门店操作 ====================
 
@@ -280,8 +400,8 @@ int create_transfer_order(int from_store_id, int to_store_id, int creator_id, co
     
     TransferOrder *order = (TransferOrder*)malloc(sizeof(TransferOrder));
     memset(order, 0, sizeof(TransferOrder));
-    
-    order->id = generate_id();
+
+    order->id = ++g_transfer_id_counter;
     order->from_store_id = from_store_id;
     order->to_store_id = to_store_id;
     strncpy(order->from_store_name, from_store->name, 99);
@@ -336,14 +456,16 @@ int add_transfer_item(int transfer_id, const char *product_id, int quantity) {
     strncpy(item->product_id, product_id, MAX_ID_LEN - 1);
     strncpy(item->product_name, prod->name, MAX_NAME_LEN - 1);
     item->quantity = quantity;
-    
-    item->next = order->items;
-    order->items = item;
-    
-    // 同时添加到全局列表
+
+    /* 加入全局链表（遍历时通过 transfer_id 过滤） */
     item->next = g_transfer_items;
     g_transfer_items = item;
-    
+
+    /* 仅在 order->items 为空时设置锚点（供 find_transfer_order 等使用） */
+    if (!order->items) {
+        order->items = item;
+    }
+
     save_transfer_item(item);
     
     return 0;
@@ -422,10 +544,14 @@ int confirm_out_transfer(int transfer_id, int operator_id) {
         return -1;
     }
     
-    // 扣减源门店库存
-    TransferItem *item = order->items;
+    /* 扣减源门店库存：遍历全局 TransferItem 链表，筛选属于该调拨单的明细 */
+    TransferItem *item = g_transfer_items;
     while (item) {
-        if (reduce_store_stock(order->from_store_id, item->product_id, 
+        if (item->transfer_id != transfer_id) {
+            item = item->next;
+            continue;
+        }
+        if (reduce_store_stock(order->from_store_id, item->product_id,
                               item->quantity, operator_id, "调拨出库") != 0) {
             // 如果没有使用多门店库存，使用全局库存
             Product *prod = find_product_by_id(item->product_id);
@@ -467,9 +593,13 @@ int confirm_in_transfer(int transfer_id, int operator_id) {
         return -1;
     }
     
-    // 增加目标门店库存
-    TransferItem *item = order->items;
+    /* 增加目标门店库存：遍历全局 TransferItem 链表，筛选属于该调拨单的明细 */
+    TransferItem *item = g_transfer_items;
     while (item) {
+        if (item->transfer_id != transfer_id) {
+            item = item->next;
+            continue;
+        }
         if (add_store_stock(order->to_store_id, item->product_id,
                            item->quantity, operator_id, "调拨入库") != 0) {
             // 如果没有使用多门店库存，增加全局库存
@@ -1330,6 +1460,9 @@ int load_transfers(void) {
         order->next = g_transfer_orders;
         g_transfer_orders = order;
         
+        if (order->id > g_transfer_id_counter) {
+            g_transfer_id_counter = order->id;
+        }
         if (order->id > g_auto_id_counter) {
             g_auto_id_counter = order->id;
         }
@@ -1368,15 +1501,21 @@ int load_transfer_items(void) {
         token = strtok_r(NULL, "|", &saveptr); item->quantity = token ? atoi(token) : 0;
         token = strtok_r(NULL, "|", &saveptr); item->id = token ? atoi(token) : 0;
         
-        // 添加到对应的调拨单
-        TransferOrder *order = find_transfer_order(item->transfer_id);
-        if (order) {
-            item->next = order->items;
-            order->items = item;
-        }
-        
+        /* 加入全局链表（不使用 item->next，靠 transfer_id 过滤遍历） */
         item->next = g_transfer_items;
         g_transfer_items = item;
+
+        /* 挂到对应调拨单的 items 链表头（头插法），
+         * 使用独立的 next 指针：order->items 链通过 transfer_id 匹配后
+         * 由 find_transfer_order_items 等函数遍历全局链表来实现。
+         * 此处保持 order->items 指向该调拨单最新加载的 item 即可。
+         */
+        TransferOrder *order = find_transfer_order(item->transfer_id);
+        if (order && !order->items) {
+            /* 仅记录第一个 item 作为锚点，
+             * 实际遍历通过全局链表 + transfer_id 过滤完成 */
+            order->items = item;
+        }
     }
     
     fclose(fp);

@@ -640,11 +640,11 @@ typedef struct Receipt {
 
 // ==================== 全局变量声明 ====================
 // 核心全局变量
-extern HashTable *g_product_hash;
 extern int g_auto_id_counter;
-extern int g_sale_order_counter;  // 销售订单专用计数器，从1开始
 extern int g_member_id_counter;    // 会员ID专用计数器，从1开始
 extern int g_employee_id_counter;  // 员工ID专用计数器，从1开始
+extern int g_product_id_counter;   // 商品ID专用计数器，从1开始
+extern int g_transfer_id_counter;  // 调拨单专用计数器，从1开始
 extern int g_current_user_id;
 
 // 会员全局变量
@@ -692,7 +692,6 @@ char* generate_salt(char *salt);
 void get_timestamp(char *buffer);
 int get_year_week(int *year, int *week);
 int generate_id(void);
-void init_sale_id_counter(void);
 void format_time(time_t t, char *buffer);
 time_t parse_date_yyyymmdd(const char *date_str);
 typedef struct { time_t start; time_t end; } TimeRange;
@@ -714,11 +713,14 @@ Employee** list_employees(int *count);
 // ==================== 商品操作 ====================
 int add_product(Product *prod);
 Product* find_product_by_id(const char *id);
+Product* refresh_product_by_id(const char *id);
 Product* find_product_by_barcode(const char *barcode);
 int update_product(Product *prod);
 int delete_product(const char *id);
 int load_products(void);
 int save_products(void);
+Product** list_products(int *count);
+Product** list_low_stock_products(int *count);
 
 // ==================== 供应商操作 ====================
 int add_supplier(Supplier *sup);
@@ -729,8 +731,6 @@ int save_suppliers(void);
 // ==================== 库存操作 ====================
 int record_stock_log(const char *product_id, const char *type, float quantity,
                      float before_stock, float after_stock, int operator_id, const char *remark);
-int save_stock_log(StockLog *log);
-int load_stock_logs(void);
 StockLog* query_stock_logs(const char *product_id, time_t start, time_t end, int *count);
 void check_stock_alert(void);
 void inventory_check(void);
@@ -745,6 +745,7 @@ TransactionLog* query_transaction_logs(const char *type, time_t start, time_t en
 int add_member(const char *phone, const char *name);
 Member* find_member_by_phone(const char *phone);
 Member* find_member_by_id(int id);
+Member* refresh_member_by_id(int id);
 int update_member(Member *member);
 int delete_member(int id);
 float redeem_points(Member *member, int points_to_redeem);
@@ -835,19 +836,20 @@ void generate_batch_no(const char *product_id, char *out_batch_no);
 const char* get_expiry_category(int days);
 
 // ==================== 销售操作 ====================
-int generate_sale_order_id(void);  // 生成销售订单ID（从1开始递增）
 int create_sale(Sale *sale);
 int add_sale_item(int sale_id, SaleItem *item);
 SaleItem* get_sale_items(int sale_id, int *count);
 Sale* find_pending_sale(int sale_id);
 float calculate_sale_total(int sale_id);
 int complete_sale(int sale_id, const char *payment_method, float discount_pct, float discount_amount, float cash_received);
+int complete_sale_with_vip(int sale_id, const char *payment_method,
+                           float discount_pct, float discount_amount,
+                           float cash_received, const char *vip_card_no);
 int hang_sale(int sale_id);
 int cancel_sale(int sale_id);
 int load_pending_sales(void);
 int save_pending_sale(Sale *sale);
 int save_all_pending_sales(void);
-int save_sale_record(Sale *sale);
 int scan_and_sell(int cashier_id, const char *barcode, int quantity);
 void cleanup_cashier_sales(int cashier_id);
 
@@ -1008,6 +1010,8 @@ void generate_sales_report(time_t start, time_t end, const char *format);
 int export_sales_csv(time_t start, time_t end, const char *filename);
 int export_sales_html(time_t start, time_t end, const char *filename);
 void generate_inventory_report(const char *format);
+int export_inventory_csv(const char *filename);
+int export_inventory_html(const char *filename);
 void generate_purchase_report(time_t start, time_t end, const char *format);
 void generate_profit_loss_report(time_t start, time_t end);
 void show_export_menu(void);
