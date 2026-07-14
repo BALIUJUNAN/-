@@ -18,6 +18,7 @@
 
 - GCC 4.8+ 或 MinGW-w64
 - C99 标准支持
+- AbyssDB 源码目录（存储层使用 C17 单独编译）
 - Windows XP+ / Linux / macOS
 - 终端支持 ANSI 颜色（大多数现代终端均支持）
 
@@ -66,51 +67,128 @@
 ## 项目结构
 
 ```
-supermarket/
-├── main.c              # 主程序入口、菜单交互、业务流程控制
-├── supermarket.h       # 合并头文件（宏定义、数据结构、函数声明）
-├── supermarket.c       # 核心实现（哈希表、文件IO、员工管理）
-├── sale.c              # 销售模块（扫码、挂单、支付、订单编号）
-├── purchase.c          # 采购模块（订单、审批、收货）
-├── schedule.c          # 排班模块（周排班、统计）
-├── report.c            # 报表模块（各类报表、CSV导出）
-├── marketing.c         # 营销模块（促销、会员管理）
-├── finance.c           # 财务模块（储值卡、供应商结算）
-├── store_ops.c         # 门店模块（调拨、套装）
-├── utility.c           # 工具函数（时间、验证、文件操作）
-├── ui.c                # UI界面模块实现（边框、表格、颜色、安全输入）
-├── ui.h                # UI界面模块头文件
-├── hash.h              # 哈希表数据结构与 SHA-256 声明
-├── Makefile            # Makefile 构建脚本（支持增量编译）
-├── build.bat           # Windows 编译脚本（MinGW）
-├── build.sh            # Linux/macOS 编译脚本
-├── README.md           # 说明文档
-├── .gitignore          # Git 忽略规则
-├── data/               # 数据目录（纯文本存储，运行时自动创建）
-│   ├── employee.txt    # 员工信息
-│   ├── product.txt     # 商品信息
-│   ├── sales.txt       # 销售记录
-│   ├── member.txt      # 会员信息
-│   ├── promotion.txt   # 促销活动
-│   ├── stock_log.txt   # 库存日志
-│   └── store.txt       # 门店信息
-├── output/             # 输出目录（小票、报表）
-│   └── receipt_*.txt   # 销售小票文件
-└── web/                # Web 版本（Python Flask）
-    ├── app.py          # Flask 应用主程序
-    ├── start.bat       # Windows 启动脚本
-    ├── README.md       # Web 版说明文档
-    ├── instance/       # 数据库目录
-    │   └── supermarket.db  # SQLite 数据库
-    └── templates/      # HTML 模板
-        ├── index.html      # 首页
-        ├── login.html      # 登录页
-        ├── sale.html       # 销售收银页
-        ├── products.html   # 商品管理页
-        ├── members.html    # 会员管理页
-        ├── promotions.html # 促销管理页
-        ├── vipcards.html   # 储值卡管理页
-        └── reports.html    # 报表页面
+.
+├── main.c                  # 主程序入口、菜单交互、业务流程控制
+├── supermarket.h           # 合并头文件（宏定义、数据结构、函数声明）
+├── supermarket.c           # 核心实现（哈希表、文件IO、员工管理）
+├── sale.c                  # 销售模块（扫码、挂单、支付、订单编号）
+├── purchase.c              # 采购模块（订单、审批、收货）
+├── schedule.c              # 排班模块（周排班、统计）
+├── report.c                # 报表模块（各类报表、CSV导出）
+├── marketing.c             # 营销模块（促销、会员管理）
+├── finance.c               # 财务模块（储值卡、供应商结算）
+├── store_ops.c             # 门店模块（调拨、套装）
+├── utility.c               # 工具函数（时间、验证、文件操作）
+├── ui.c / ui.h             # UI界面模块（边框、表格、颜色、安全输入）
+├── hash.h                  # 哈希表数据结构与 SHA-256 声明
+├── config.mk.example       # 本地 AbyssDB 路径配置示例
+├── Makefile                # Makefile 构建脚本（支持增量编译）
+├── build.bat               # Windows 编译脚本（MinGW）
+├── build.sh                # Linux/macOS 编译脚本
+│
+├── domain/                 # 领域实体（与 ABI 无关的持久化数据结构）
+│   ├── sm_base_entities.h
+│   ├── sm_sales_entities.h
+│   ├── sm_inventory_entities.h
+│   ├── sm_purchase_entities.h
+│   ├── sm_finance_entities.h
+│   └── sm_operations_entities.h
+│
+├── storage/                # AbyssDB 存储层（生命周期、事务、Key/Value 编解码）
+│   ├── sm_store.h / .c     # 存储引擎（B+ 树）
+│   ├── sm_key.h / .c       # Key 编码
+│   ├── sm_codec.h / .c     # Value 编解码
+│   └── sm_namespace.h      # 命名空间管理
+│
+├── repo/                   # 仓储层（UOW、codec、CRUD、原子索引）
+│   ├── sm_repository.h / .c          # 仓储入口
+│   ├── sm_base_codec.h / .c          # 基础实体编解码
+│   ├── sm_base_repository.h / .c     # 基础实体仓储
+│   ├── sm_sales_codec.h / .c         # 销售编解码
+│   ├── sm_sales_repository.h / .c    # 销售仓储
+│   ├── sm_inventory_codec.h / .c     # 库存编解码
+│   ├── sm_inventory_repository.h / .c # 库存仓储
+│   ├── sm_purchase_codec.h / .c      # 采购编解码
+│   ├── sm_purchase_repository.h / .c # 采购仓储
+│   ├── sm_finance_codec.h / .c       # 财务编解码
+│   ├── sm_finance_repository.h / .c  # 财务仓储
+│   ├── sm_operations_codec.h / .c    # 运营编解码
+│   ├── sm_operations_repository.h / .c # 运营仓储
+│   └── sm_control_repository.c       # 控制/审计仓储
+│
+├── migration/              # 数据迁移层（旧文本文件 → AbyssDB）
+│   ├── sm_legacy_import.h / .c       # 基础数据迁移
+│   ├── sm_sales_import.h / .c        # 销售迁移
+│   ├── sm_inventory_import.h / .c    # 库存迁移
+│   ├── sm_purchase_import.h / .c     # 采购迁移
+│   ├── sm_finance_import.h / .c      # 财务迁移
+│   └── sm_operations_import.h / .c   # 运营迁移
+│
+├── app/                    # 应用服务层（业务编排、UOW 协调）
+│   ├── sm_app_context.h / .c         # 应用上下文
+│   ├── sm_base_service.h / .c        # 基础服务
+│   ├── sm_sales_service.h / .c       # 销售服务
+│   ├── sm_inventory_service.h / .c   # 库存服务
+│   ├── sm_purchase_service.h / .c    # 采购服务
+│   ├── sm_finance_service.h / .c     # 财务服务
+│   ├── sm_store_service.c            # 门店服务
+│   ├── sm_operations_service.h       # 运营服务
+│   ├── sm_control_service.c          # 控制/审计服务
+│   ├── sm_vip_legacy.c               # 会员兼容层
+│   ├── sm_finance_legacy.c           # 财务兼容层
+│   ├── sm_store_legacy.c             # 门店兼容层
+│   └── sm_control_legacy.c           # 控制兼容层
+│
+├── tests/                  # 12 阶段增量测试（storage → repo → entity → migration → business）
+│   ├── test_storage_phase2.c
+│   ├── test_repository_phase3.c
+│   ├── test_base_entities_phase4.c
+│   ├── test_migration_phase5.c
+│   ├── test_sales_phase6.c
+│   ├── test_inventory_phase7.c
+│   ├── test_purchase_phase8.c
+│   ├── test_supplier_finance_phase9.c
+│   ├── test_vip_phase10.c
+│   ├── test_store_transfer_phase11.c
+│   └── test_control_phase12.c
+│
+├── docs/                   # 重构文档
+│   └── abyss-refactor/     # 12 阶段重构设计文档
+│       ├── phase-01-design.md
+│       ├── phase-02-storage.md
+│       ├── phase-03-repository.md
+│       ├── phase-04-base-entities.md
+│       ├── phase-05-migration.md
+│       ├── phase-06-sales.md
+│       ├── phase-07-inventory-ledger.md
+│       ├── phase-08-purchase-fifo.md
+│       ├── phase-09-supplier-finance.md
+│       ├── phase-10-vip-card.md
+│       ├── phase-11-store-transfer.md
+│       └── phase-12-control-audit-v1.md
+│
+├── web/                    # Web 版本（Python Flask）
+│   ├── app.py              # Flask 应用主程序
+│   ├── start.bat           # Windows 启动脚本
+│   ├── README.md           # Web 版说明文档
+│   ├── instance/           # 数据库目录
+│   │   └── supermarket.db  # SQLite 数据库
+│   └── templates/          # HTML 模板
+│
+├── data/                   # 数据目录（纯文本存储，运行时自动创建）
+│   ├── employee.txt        # 员工信息
+│   ├── product.txt         # 商品信息
+│   ├── sales.txt           # 销售记录
+│   ├── member.txt          # 会员信息
+│   ├── promotion.txt       # 促销活动
+│   └── store.txt           # 门店信息
+│
+├── output/                 # 输出目录（小票、报表）
+│   └── receipt_*.txt       # 销售小票文件
+│
+├── README.md               # 说明文档
+├── .gitignore              # Git 忽略规则
+└── .clang-format           # 代码格式化配置
 ```
 
 ## 快速开始
@@ -121,8 +199,25 @@ supermarket/
 
 **使用 Makefile（推荐，支持增量编译）**
 
+先复制 `config.mk.example` 为 `config.mk`，并设置本机的 AbyssDB 源码路径：
+
+```make
+ABYSS_ROOT := C:/path/to/AbyssDB
+```
+
 ```bash
 make
+make test-phase2
+make test-phase3
+make test-phase4
+make test-phase5
+make test-phase6
+make test-phase7
+make test-phase8
+make test-phase9
+make test-phase10
+make test-phase11
+make test-phase12
 ```
 
 **Windows (MinGW)**
@@ -131,11 +226,7 @@ make
 build.bat
 ```
 
-或手动编译：
-
-```batch
-gcc main.c supermarket.c sale.c purchase.c schedule.c report.c marketing.c finance.c store_ops.c utility.c ui.c -o supermarket.exe -O2 -Wall -Wextra -Wpedantic -std=c99
-```
+`build.bat` 统一调用 Makefile，可附加 `ABYSS_ROOT=...` 参数。
 
 **Linux / macOS**
 
@@ -144,11 +235,7 @@ chmod +x build.sh
 ./build.sh
 ```
 
-或手动编译：
-
-```bash
-gcc main.c supermarket.c sale.c purchase.c schedule.c report.c marketing.c finance.c store_ops.c utility.c ui.c -o supermarket -O2 -Wall -Wextra -Wpedantic -std=c99
-```
+`build.sh` 统一调用 Makefile，可附加 `ABYSS_ROOT=...` 参数。
 
 #### 运行
 
@@ -191,24 +278,26 @@ python app.py
 
 ## 订单编号机制
 
-销售订单采用独立的连续编号系统：
+销售订单采用 AbyssDB 中的持久化编号系统：
 
-- **独立计数器**：`g_sale_order_counter` 记录下一个可用订单编号
-- **启动初始化**：程序启动时自动扫描 `sales.txt` 和 `pending_sales.txt`，找到历史最大订单编号
-- **连续递增**：新订单编号 = 历史最大订单编号 + 1
-- **永不间断**：即使删除历史订单，计数器也会继续递增，不会出现编号重叠
+- **事务计数器**：订单和明细 ID 在数据库写事务中分配
+- **迁移水位**：首次导入旧记录时保留原 ID，并推进计数器到历史最大值之后
+- **重启安全**：编号水位随数据库恢复，不扫描文本文件
+- **不会重叠**：取消或删除订单不会回退持久化计数器
 
 ## 技术特性
 
 | 特性 | 说明 |
 |------|------|
-| 哈希表索引 | O(1) 查询性能，支持 ID/条码双索引 |
-| 连续订单编号 | 独立计数器 + 文件扫描，确保编号连续不间断 |
-| 原子性写入 | 临时文件 + rename 实现数据安全 |
+| 分层架构 | domain → storage → repo → app，职责清晰 |
+| AbyssDB 存储 | B+ 树引擎，支持事务、原子写入、文件锁 |
+| 持久化订单编号 | 事务 counter + 迁移水位，重启后不会重复 |
+| 原子性写入 | 单个 UOW 同时提交订单、库存和会员状态 |
 | 文件锁机制 | 支持 Windows/Linux 多平台并发控制 |
 | 密码安全 | 盐值 + SHA256 哈希存储 |
 | 事务日志 | 完整的操作审计追踪 |
 | 增量编译 | Makefile 支持仅重编译修改过的文件 |
+| 12 阶段测试 | 每层独立测试，覆盖 storage → repo → entity → migration → business |
 
 ## UI 特性
 
@@ -251,7 +340,7 @@ python app.py
 
 ### C 终端版
 
-所有数据以 `|` 分隔的文本格式存储在 `data/` 目录：
+核心运行时数据存储在 `data/supermarket.abdb`。下列 `|` 分隔文本仅供尚未迁移模块使用，或作为已迁移模块的首次导入来源：
 
 | 文件 | 说明 |
 |------|------|
@@ -259,22 +348,20 @@ python app.py
 | product.txt | 商品信息 |
 | sales.txt | 销售记录 |
 | pending_sales.txt | 待支付销售记录 |
-| purchase.txt | 采购订单 |
+| purchase.txt / purchase_item.txt | 旧采购数据，仅首次迁移输入 |
+| batch.txt | 旧批次数据，仅首次迁移输入 |
 | promotion.txt | 促销活动 |
 | member.txt | 会员信息 |
-| vip_card.txt | 储值卡信息 |
-| vip_card_tx.txt | 储值卡交易记录 |
+| vipcard.txt / vipcard_trans.txt | 旧储值卡及交易，仅首次迁移输入 |
 | store.txt | 门店信息 |
 | store_stock.txt | 门店库存 |
 | transfer.txt | 调拨单 |
 | supplier.txt | 供应商信息 |
-| supplier_finance.txt | 供应商财务 |
-| payable.txt | 应付款 |
-| payment_record.txt | 付款记录 |
+| supplier_finance.txt / payable.txt / payment_record.txt | 旧供应商财务数据，仅首次迁移输入 |
 | schedule.txt | 排班记录 |
 | combo.txt | 套装信息 |
 | combo_item.txt | 套装商品 |
-| stock_log.txt | 库存日志 |
+| stock_log.txt | 旧库存日志，仅首次迁移输入 |
 | transaction_log.txt | 事务日志 |
 
 ### Web 版
@@ -296,35 +383,72 @@ python app.py
 
 ### 源码规模
 
-| 文件 | 代码行数 | 说明 |
-|------|---------|------|
-| main.c | 2,688 | 主程序、菜单、业务流程 |
-| marketing.c | 2,652 | 营销模块（促销、会员） |
-| store_ops.c | 1,661 | 门店模块（调拨、套装） |
-| supermarket.c | 1,268 | 核心实现（哈希表、文件IO） |
-| utility.c | 815 | 工具函数 |
+| 目录/文件 | 代码行数 | 说明 |
+|-----------|---------|------|
+| main.c | 3,016 | 主程序、菜单、业务流程 |
+| marketing.c | 2,655 | 营销模块（促销、会员） |
+| store_ops.c | 1,800 | 门店模块（调拨、套装） |
+| supermarket.c | 1,279 | 核心实现（哈希表、文件IO） |
 | ui.c | 862 | UI 界面模块 |
-| report.c | 710 | 报表模块 |
-| sale.c | 756 | 销售模块 |
-| purchase.c | 495 | 采购模块 |
-| finance.c | 457 | 财务模块 |
-| schedule.c | 289 | 排班模块 |
-| supermarket.h | 1,020 | 合并头文件 |
+| utility.c | 776 | 工具函数 |
+| report.c | 719 | 报表模块 |
+| sale.c | 722 | 销售模块 |
+| purchase.c | 453 | 采购模块 |
+| finance.c | 444 | 财务模块 |
+| schedule.c | 390 | 排班模块 |
+| supermarket.h | 1,024 | 合并头文件 |
 | ui.h | 321 | UI 头文件 |
 | hash.h | 46 | 哈希表头文件 |
-| **合计** | **14,040** | |
+| **业务层小计** | **~15,000** | |
+| | | |
+| domain/ | 424 | 领域实体定义 |
+| storage/ | 1,139 | AbyssDB 存储引擎 |
+| repo/ | 5,939 | 仓储层（UOW、codec、CRUD） |
+| migration/ | 2,404 | 数据迁移层 |
+| app/ | 3,792 | 应用服务层 |
+| tests/ | 2,537 | 12 阶段测试 |
+| **架构层小计** | **~16,200** | |
+| | | |
+| **合计** | **~33,300** | |
+
+### 架构分层
+
+```
+┌─────────────────────────────────────────┐
+│              main.c (UI 入口)            │
+├─────────────────────────────────────────┤
+│  app/      应用服务层 (业务编排、UOW)    │
+├─────────────────────────────────────────┤
+│  repo/     仓储层 (CRUD、codec、索引)    │
+├─────────────────────────────────────────┤
+│  domain/   领域实体 (数据结构定义)        │
+├─────────────────────────────────────────┤
+│  storage/  存储引擎 (AbyssDB B+ 树)     │
+├─────────────────────────────────────────┤
+│  migration/ 数据迁移 (旧文件 → AbyssDB)  │
+└─────────────────────────────────────────┘
+```
 
 ### 主要数据结构
 
 - **哈希表**：用于快速查找（商品ID/条码、员工ID、会员手机号）
 - **链表**：用于存储同类记录集合
 - **结构体**：模块化数据封装
+- **AbyssDB B+ 树**：持久化键值存储，支持事务和原子写入
 
 ### 文件同步策略
 
 1. 修改内存数据
 2. 写入临时文件 `.tmp`
 3. `rename()` 原子替换原文件
+
+## AbyssDB V1 存储状态
+
+12 阶段 C 语言重构已完成。员工、商品、供应商、会员、销售、库存台账、批次、采购、供应商财务、储值卡、门店、调拨、促销、商品套装、排班、日结和审计记录均使用 `data/supermarket.abdb` 作为运行时权威存储。
+
+旧版业务文本文件仅作为首次迁移输入。正常应用的创建、更新、删除、加载、保存、报表和备份路径不会重写它们。导入前验证完整源数据集，在一个事务中执行迁移，保留遗留 ID，推进计数器水位线，提交后仅写入持久的每阶段完成标记。
+
+详见 `docs/abyss-refactor/phase-11-store-transfer.md` 和 `docs/abyss-refactor/phase-12-control-audit-v1.md`。
 
 ## 许可证
 

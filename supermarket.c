@@ -16,6 +16,8 @@
  */
 
 #include "supermarket.h"
+#include "app/sm_app_context.h"
+#include "app/sm_base_service.h"
 #include <errno.h>
 #include <ctype.h>
 
@@ -33,7 +35,6 @@
  *   保证重启后新 ID 不会与已有数据冲突。
  */
 int g_auto_id_counter = 0;       // 通用自增计数器（供应商等辅助实体使用）
-int g_sale_order_counter = 0;    // 销售订单专用计数器（格式：纯数字 1,2,3...）
 int g_member_id_counter = 0;     // 会员ID专用计数器（格式：纯数字）
 int g_employee_id_counter = 0;   // 员工ID专用计数器（格式：纯数字）
 int g_product_id_counter = 0;    // 商品ID专用计数器（格式：P0001, P0002...）
@@ -48,7 +49,7 @@ int g_transfer_id_counter = 0;   // 调拨单专用计数器（格式：纯数�
  *   g_member_phone_hash — 会员手机号索引表（key=手机号，value=Member*，与 g_members 链表共享对象）
  */
 static HashTable *g_employee_hash = NULL;
-HashTable *g_product_hash = NULL;
+static HashTable *g_product_hash = NULL;
 static HashTable *g_barcode_hash = NULL;
 static HashTable *g_supplier_hash = NULL;
 HashTable *g_member_phone_hash = NULL;
@@ -373,7 +374,7 @@ int atomic_write(const char *filepath, const char *content) {
  *
  * 与 atomic_write（全量覆盖）不同，此函数以 append 模式追加一行数据。
  * 使用文件锁防止多进程同时追加导致数据交错。
- * 适用于 save_purchase_item()、save_stock_log() 等单条记录写入场景。
+ * 适用于仍待迁移的单条文本记录写入场景。
  *
  * @param filepath  目标文件路径
  * @param content   要追加的一行内容（自动添加换行符）
@@ -730,66 +731,6 @@ int generate_id(void) {
     return ++g_auto_id_counter;
 }
 
-/**
- * 初始化销售订单 ID 计数器
- *
- * 扫描 sales.txt（已完成订单）和 pending_sales.txt（挂单），
- * 找出历史最大订单号，将 g_sale_order_counter 设为该值。
- * 这样下次调用 generate_sale_order_id() 时返回 max+1，避免 ID 冲突。
- *
- * 必须在系统启动时（init_system 之后）调用。
- */
-void init_sale_id_counter(void) {
-    char filepath[256];
-    int max_sale_id = 0;
-
-    /* 扫描已完成销售记录 */
-    snprintf(filepath, sizeof(filepath), "%s/sales.txt", DATA_DIR);
-    FILE *fp = fopen(filepath, "r");
-    if (fp) {
-        char line[MAX_LINE_LEN];
-        while (fgets(line, sizeof(line), fp)) {
-            trim(line);
-            if (strlen(line) == 0) continue;
-            char *saveptr;
-            char *token = strtok_r(line, "|", &saveptr);
-            if (token) {
-                int id = atoi(token);
-                if (id > max_sale_id) max_sale_id = id;
-            }
-        }
-        fclose(fp);
-    }
-
-    /* 扫描挂单记录 */
-    snprintf(filepath, sizeof(filepath), "%s/pending_sales.txt", DATA_DIR);
-    fp = fopen(filepath, "r");
-    if (fp) {
-        char line[MAX_LINE_LEN];
-        while (fgets(line, sizeof(line), fp)) {
-            trim(line);
-            if (strlen(line) == 0) continue;
-            char *saveptr;
-            char *token = strtok_r(line, "|", &saveptr);
-            if (token) {
-                int id = atoi(token);
-                if (id > max_sale_id) max_sale_id = id;
-            }
-        }
-        fclose(fp);
-    }
-
-    g_sale_order_counter = max_sale_id;  /* 下次 ++ 后为 max+1 */
-}
-
-/**
- * 生成销售订单ID
- * 每次调用返回上一个值+1
- */
-int generate_sale_order_id(void) {
-    return ++g_sale_order_counter;
-}
-
 // ==================== 初始化/清理 ====================
 
 /**
@@ -799,15 +740,17 @@ int generate_sale_order_id(void) {
  *   1. 初始化随机数种子（用于 generate_salt 等）
  *   2. 创建必要目录（data/、tmp/、output/）
  *   3. 初始化 5 个哈希表（员工、商品、条码、供应商、会员手机号）
- *   4. 加载系统配置（config.txt）
- *   5. 从文件加载核心数据（员工、商品、供应商、会员、日结单、批次、促销）
+ *   4. 打开 AbyssDB 并执行首次旧数据迁移
+ *   5. 从数据库加载配置，扩展聚合暂沿用文本加载
  *
  * 注意：此函数只加载基础数据。main.c 中还会额外调用：
- *   init_sale_id_counter()、load_schedules()、load_pending_sales() 等。
+ *   load_schedules()、load_pending_sales() 等。
  *
  * @return 0 成功，-1 哈希表分配失败
  */
 int init_system(void) {
+    sm_app_context_config app_config;
+    sm_repo_status repo_status;
     srand((unsigned int)time(NULL));
 
     /* 1. 创建必要目录（已存在则忽略） */
@@ -828,14 +771,32 @@ int init_system(void) {
         return -1;
     }
 
-    /* 3. 加载系统配置 */
-    load_config();
+    /* 3. 打开数据库，并在首次启动时原子导入旧基础数据。 */
+    sm_app_context_config_default(&app_config);
+    repo_status = sm_app_context_start(&app_config);
+    if (repo_status != SM_REPO_OK) {
+        fprintf(stderr, "数据库初始化失败: %s\n", sm_app_last_message());
+        hash_destroy(g_employee_hash, free); g_employee_hash = NULL;
+        hash_destroy(g_product_hash, free); g_product_hash = NULL;
+        hash_destroy(g_barcode_hash, NULL); g_barcode_hash = NULL;
+        hash_destroy(g_supplier_hash, free); g_supplier_hash = NULL;
+        hash_destroy(g_member_phone_hash, NULL); g_member_phone_hash = NULL;
+        return -1;
+    }
 
-    /* 4. 从文件加载核心数据（每个 load_xxx 内部会处理文件不存在的情况） */
-    load_employees();     /* 员工 → g_employee_hash */
-    load_products();      /* 商品 → g_product_hash + g_barcode_hash */
-    load_suppliers();     /* 供应商 → g_supplier_hash */
-    load_members();       /* 会员 → g_members 链表 + g_member_phone_hash */
+    /* 4. 配置是单例缓存；其他基础实体按需加载。 */
+    if (load_config() != 0) {
+        fprintf(stderr, "加载系统配置失败\n");
+        (void)sm_app_context_stop();
+        hash_destroy(g_employee_hash, free); g_employee_hash = NULL;
+        hash_destroy(g_product_hash, free); g_product_hash = NULL;
+        hash_destroy(g_barcode_hash, NULL); g_barcode_hash = NULL;
+        hash_destroy(g_supplier_hash, free); g_supplier_hash = NULL;
+        hash_destroy(g_member_phone_hash, NULL); g_member_phone_hash = NULL;
+        return -1;
+    }
+
+    /* 5. 批次从数据库重建缓存；其他扩展聚合暂沿用原加载路径。 */
     load_settlements();   /* 日结单 → g_settlements 链表 */
     load_batches();       /* 批次 → g_batches 链表 */
     load_promotions();    /* 促销 → g_promotions 链表（按优先级排序） */
@@ -857,13 +818,9 @@ int init_system(void) {
  *       由后者负责释放实际对象，避免重复释放。
  */
 void cleanup_system(void) {
-    /* 1. 全量保存数据到文件 */
-    save_employees();
-    save_products();
-    save_suppliers();
+    /* 1. 基础实体同步提交；这里只刷新可变会员缓存和配置。 */
     save_members();
     save_all_settlements();
-    save_all_batches();
     save_all_promotions();
     save_config();
 
@@ -872,7 +829,7 @@ void cleanup_system(void) {
     if (g_product_hash)      hash_destroy(g_product_hash, free);
     if (g_barcode_hash)      hash_destroy(g_barcode_hash, NULL);    /* 共享指针，不释放 data */
     if (g_supplier_hash)     hash_destroy(g_supplier_hash, free);
-    if (g_member_phone_hash) hash_destroy(g_member_phone_hash, free);
+    if (g_member_phone_hash) hash_destroy(g_member_phone_hash, NULL);
     if (g_combo_barcode_hash) hash_destroy(g_combo_barcode_hash, NULL); /* 共享指针 */
 
     /* 3. 释放链表内存 */
@@ -928,6 +885,9 @@ void cleanup_system(void) {
     }
     g_vip_cards = NULL;
 
+    if (sm_app_context_stop() != SM_REPO_OK)
+        fprintf(stderr, "关闭数据库失败: %s\n", sm_app_last_message());
+
     printf("系统资源已清理\n");
 }
 
@@ -936,19 +896,36 @@ void cleanup_system(void) {
 /**
  * 添加员工
  */
+static Employee *cache_employee(const Employee *value) {
+    char key[32];
+    Employee *cached;
+    Employee *copy;
+    if (!value || value->id <= 0) return NULL;
+    snprintf(key, sizeof(key), "%d", value->id);
+    cached = (Employee *)hash_search(g_employee_hash, key);
+    if (cached) {
+        *cached = *value;
+        return cached;
+    }
+    copy = (Employee *)malloc(sizeof(*copy));
+    if (!copy) return NULL;
+    *copy = *value;
+    if (hash_insert(g_employee_hash, key, copy) != 0) {
+        free(copy);
+        return NULL;
+    }
+    return copy;
+}
+
 int add_employee(Employee *emp) {
-    emp->id = ++g_employee_id_counter;
+    if (!emp) return -1;
+    emp->id = 0;
     emp->created_at = time(NULL);
     emp->updated_at = emp->created_at;
     emp->status = STATUS_ACTIVE;
-    
-    Employee *new_emp = (Employee*)malloc(sizeof(Employee));
-    *new_emp = *emp;
-
-    char key[32];
-    sprintf(key, "%d", emp->id);
-    hash_insert(g_employee_hash, key, new_emp);
-
+    if (sm_service_employee_create(emp) != SM_REPO_OK) return -1;
+    (void)cache_employee(emp);
+    if (emp->id > g_employee_id_counter) g_employee_id_counter = emp->id;
     return emp->id;
 }
 
@@ -957,22 +934,30 @@ int add_employee(Employee *emp) {
  */
 Employee* find_employee_by_id(int id) {
     char key[32];
-    sprintf(key, "%d", id);
-    return (Employee*)hash_search(g_employee_hash, key);
+    Employee value;
+    Employee *cached;
+    if (id <= 0) return NULL;
+    snprintf(key, sizeof(key), "%d", id);
+    cached = (Employee *)hash_search(g_employee_hash, key);
+    if (cached) return cached;
+    if (sm_service_employee_get(id, &value) != SM_REPO_OK) return NULL;
+    return cache_employee(&value);
 }
 
 /**
  * 更新员工
  */
 int update_employee(Employee *emp) {
+    Employee persisted;
+    if (!emp || emp->id <= 0) return -1;
     emp->updated_at = time(NULL);
-    
-    Employee *existing = find_employee_by_id(emp->id);
-    if (existing) {
-        *existing = *emp;
-        return 0;
+    if (sm_service_employee_update(emp) != SM_REPO_OK) {
+        if (sm_service_employee_get(emp->id, &persisted) == SM_REPO_OK)
+            (void)cache_employee(&persisted);
+        return -1;
     }
-    return -1;
+    (void)cache_employee(emp);
+    return 0;
 }
 
 /**
@@ -980,57 +965,15 @@ int update_employee(Employee *emp) {
  */
 int delete_employee(int id) {
     Employee *emp = find_employee_by_id(id);
-    if (emp) {
-        emp->status = STATUS_INACTIVE;
-        emp->updated_at = time(NULL);
-        return 0;
-    }
-    return -1;
+    if (!emp) return -1;
+    emp->status = STATUS_INACTIVE;
+    return update_employee(emp);
 }
 
 /**
  * 加载员工数据
  */
 int load_employees(void) {
-    char filepath[256];
-    snprintf(filepath, sizeof(filepath), "%s/employee.txt", DATA_DIR);
-
-    FILE *fp = fopen(filepath, "r");
-    if (!fp) return 0;  // 文件不存在不算错误
-
-    char line[MAX_LINE_LEN];
-    while (fgets(line, sizeof(line), fp)) {
-        trim(line);
-        if (strlen(line) == 0) continue;
-
-        Employee *emp = (Employee*)malloc(sizeof(Employee));
-        memset(emp, 0, sizeof(Employee));
-        char *token;
-        char *saveptr;
-        token = strtok_r(line, "|", &saveptr); emp->id = token ? atoi(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(emp->name, token, MAX_NAME_LEN - 1);
-        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(emp->role, token, 19);
-        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(emp->password_hash, token, 64);
-        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(emp->salt, token, 32);
-        token = strtok_r(NULL, "|", &saveptr); emp->status = token ? atoi(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr); emp->created_at = token ? (time_t)atoll(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr); emp->updated_at = token ? (time_t)atoll(token) : 0;
-
-        char key[32];
-        sprintf(key, "%d", emp->id);
-        hash_insert(g_employee_hash, key, emp);
-
-        // 更新自增ID
-        if (emp->id > g_auto_id_counter) {
-            g_auto_id_counter = emp->id;
-        }
-        // 更新员工专用计数器
-        if (emp->id > g_employee_id_counter) {
-            g_employee_id_counter = emp->id;
-        }
-    }
-
-    fclose(fp);
     return 0;
 }
 
@@ -1039,70 +982,39 @@ int load_employees(void) {
  * 构建内容 → atomic_write → rename
  */
 int save_employees(void) {
-    char filepath[256];
-    size_t bufsize = 65536;
-    char *buffer = (char*)malloc(bufsize);
-    if (!buffer) return -1;
-    char *pos = buffer;
-    size_t remaining = bufsize;
-
-    snprintf(filepath, sizeof(filepath), "%s/employee.txt", DATA_DIR);
-
-    for (int i = 0; i < g_employee_hash->size; i++) {
-        HashNode *node = g_employee_hash->buckets[i];
-        while (node) {
-            Employee *emp = (Employee*)node->data;
-            int written = snprintf(pos, remaining, "%d|%s|%s|%s|%s|%d|%lld|%lld\n",
-                emp->id, emp->name, emp->role, emp->password_hash,
-                emp->salt, emp->status, (long long)emp->created_at, (long long)emp->updated_at);
-
-            if (written >= (int)remaining) {
-                size_t offset = pos - buffer;
-                bufsize *= 2;
-                char *tmp_buf = (char*)realloc(buffer, bufsize);
-                if (!tmp_buf) { free(buffer); return -1; }
-                buffer = tmp_buf;
-                pos = buffer + offset;
-                remaining = bufsize - offset;
-                written = snprintf(pos, remaining, "%d|%s|%s|%s|%s|%d|%lld|%lld\n",
-                    emp->id, emp->name, emp->role, emp->password_hash,
-                    emp->salt, emp->status, (long long)emp->created_at, (long long)emp->updated_at);
-            }
-            pos += written;
-            remaining -= written;
-            node = node->next;
-        }
-    }
-
-    int result = atomic_write(filepath, buffer);
-    free(buffer);
-    return result;
+    return sm_app_repository() ? 0 : -1;
 }
 
 /**
  * 列出所有员工
  */
 Employee** list_employees(int *count) {
+    Employee *values = NULL;
     Employee **list = NULL;
-    int capacity = 0;
+    size_t value_count = 0;
+    size_t i;
+    if (!count) return NULL;
     *count = 0;
-
-    for (int i = 0; i < g_employee_hash->size; i++) {
-        HashNode *node = g_employee_hash->buckets[i];
-        while (node) {
-            Employee *emp = (Employee*)node->data;
-            if (emp->status == STATUS_ACTIVE) {
-                if (*count >= capacity) {
-                    capacity = capacity == 0 ? 16 : capacity * 2;
-                    list = (Employee**)realloc(list, capacity * sizeof(Employee*));
-                }
-                list[*count] = emp;
-                (*count)++;
-            }
-            node = node->next;
+    if (sm_service_employee_list(1, &values, &value_count) != SM_REPO_OK ||
+        value_count > 2147483647u)
+        return NULL;
+    if (value_count != 0) {
+        list = (Employee **)calloc(value_count, sizeof(*list));
+        if (!list) {
+            sm_service_array_free(values);
+            return NULL;
         }
     }
-
+    for (i = 0; i < value_count; ++i) {
+        list[i] = cache_employee(&values[i]);
+        if (!list[i]) {
+            free(list);
+            sm_service_array_free(values);
+            return NULL;
+        }
+    }
+    sm_service_array_free(values);
+    *count = (int)value_count;
     return list;
 }
 
@@ -1112,9 +1024,31 @@ Employee** list_employees(int *count) {
  * 生成商品ID
  * 格式: P + 4位数字（如 P0001, P0002 ...）
  */
-static void generate_product_id(char *out_id, int size) {
-    ++g_product_id_counter;
-    snprintf(out_id, size, "P%04d", g_product_id_counter);
+static Product *cache_product(const Product *value) {
+    Product *cached;
+    Product *copy;
+    char old_barcode[sizeof(value->barcode)];
+    if (!value || value->id[0] == '\0') return NULL;
+    cached = (Product *)hash_search(g_product_hash, value->id);
+    if (cached) {
+        memcpy(old_barcode, cached->barcode, sizeof(old_barcode));
+        old_barcode[sizeof(old_barcode) - 1] = '\0';
+        if (old_barcode[0] != '\0' && strcmp(old_barcode, value->barcode) != 0)
+            (void)hash_delete(g_barcode_hash, old_barcode);
+        *cached = *value;
+    } else {
+        copy = (Product *)malloc(sizeof(*copy));
+        if (!copy) return NULL;
+        *copy = *value;
+        if (hash_insert(g_product_hash, copy->id, copy) != 0) {
+            free(copy);
+            return NULL;
+        }
+        cached = copy;
+    }
+    if (cached->barcode[0] != '\0')
+        (void)hash_insert(g_barcode_hash, cached->barcode, cached);
+    return cached;
 }
 
 /**
@@ -1123,29 +1057,17 @@ static void generate_product_id(char *out_id, int size) {
  * @return 0 成功，-1 失败（条码重复）
  */
 int add_product(Product *prod) {
-    /* 自动生成商品ID */
-    generate_product_id(prod->id, MAX_ID_LEN);
-
-    /* 条码唯一性校验 */
-    if (strlen(prod->barcode) > 0) {
-        if (find_product_by_barcode(prod->barcode)) {
-            fprintf(stderr, "错误: 条码 %s 已存在\n", prod->barcode);
-            return -1;
-        }
-    }
-
+    if (!prod) return -1;
+    prod->id[0] = '\0';
     prod->created_at = time(NULL);
     prod->updated_at = prod->created_at;
-    prod->status = 1;
-
-    Product *new_prod = (Product*)malloc(sizeof(Product));
-    *new_prod = *prod;
-
-    hash_insert(g_product_hash, prod->id, new_prod);
-    if (strlen(prod->barcode) > 0) {
-        hash_insert(g_barcode_hash, prod->barcode, new_prod);
+    prod->status = STATUS_ACTIVE;
+    if (sm_service_product_create(prod) != SM_REPO_OK) return -1;
+    (void)cache_product(prod);
+    if (prod->id[0] == 'P' || prod->id[0] == 'p') {
+        int number = atoi(prod->id + 1);
+        if (number > g_product_id_counter) g_product_id_counter = number;
     }
-
     return 0;
 }
 
@@ -1153,28 +1075,51 @@ int add_product(Product *prod) {
  * 查找商品（按ID）
  */
 Product* find_product_by_id(const char *id) {
-    return (Product*)hash_search(g_product_hash, id);
+    Product value;
+    Product *cached;
+    if (!id || id[0] == '\0') return NULL;
+    cached = (Product *)hash_search(g_product_hash, id);
+    if (cached) return cached;
+    if (sm_service_product_get(id, &value) != SM_REPO_OK) return NULL;
+    return cache_product(&value);
+}
+
+Product* refresh_product_by_id(const char *id) {
+    Product value;
+    if (!id || id[0] == '\0' ||
+        sm_service_product_get(id, &value) != SM_REPO_OK)
+        return NULL;
+    return cache_product(&value);
 }
 
 /**
  * 查找商品（按条码）
  */
 Product* find_product_by_barcode(const char *barcode) {
-    return (Product*)hash_search(g_barcode_hash, barcode);
+    Product value;
+    Product *cached;
+    if (!barcode || barcode[0] == '\0') return NULL;
+    cached = (Product *)hash_search(g_barcode_hash, barcode);
+    if (cached) return cached;
+    if (sm_service_product_get_by_barcode(barcode, &value) != SM_REPO_OK)
+        return NULL;
+    return cache_product(&value);
 }
 
 /**
  * 更新商品
  */
 int update_product(Product *prod) {
+    Product persisted;
+    if (!prod || prod->id[0] == '\0') return -1;
     prod->updated_at = time(NULL);
-    
-    Product *existing = find_product_by_id(prod->id);
-    if (existing) {
-        *existing = *prod;
-        return 0;
+    if (sm_service_product_update(prod) != SM_REPO_OK) {
+        if (sm_service_product_get(prod->id, &persisted) == SM_REPO_OK)
+            (void)cache_product(&persisted);
+        return -1;
     }
-    return -1;
+    (void)cache_product(prod);
+    return 0;
 }
 
 /**
@@ -1182,66 +1127,15 @@ int update_product(Product *prod) {
  */
 int delete_product(const char *id) {
     Product *prod = find_product_by_id(id);
-    if (prod) {
-        prod->status = 0;
-        prod->updated_at = time(NULL);
-        return 0;
-    }
-    return -1;
+    if (!prod) return -1;
+    prod->status = STATUS_INACTIVE;
+    return update_product(prod);
 }
 
 /**
  * 加载商品数据
  */
 int load_products(void) {
-    char filepath[256];
-    snprintf(filepath, sizeof(filepath), "%s/product.txt", DATA_DIR);
-
-    FILE *fp = fopen(filepath, "r");
-    if (!fp) return 0;
-
-    char line[MAX_LINE_LEN];
-    while (fgets(line, sizeof(line), fp)) {
-        trim(line);
-        if (strlen(line) == 0) continue;
-
-        Product *prod = (Product*)malloc(sizeof(Product));
-        memset(prod, 0, sizeof(Product));
-        char *token;
-        char *saveptr;
-        token = strtok_r(line, "|", &saveptr); if (token) strncpy(prod->id, token, MAX_ID_LEN - 1);
-        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(prod->name, token, MAX_NAME_LEN - 1);
-        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(prod->barcode, token, 29);
-        token = strtok_r(NULL, "|", &saveptr); prod->price = token ? atof(token) : 0.0f;
-        token = strtok_r(NULL, "|", &saveptr); prod->cost = token ? atof(token) : 0.0f;
-        token = strtok_r(NULL, "|", &saveptr); prod->stock = token ? atoi(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr); prod->min_stock = token ? atoi(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(prod->category_id, token, 19);
-        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(prod->supplier_id, token, 19);
-        token = strtok_r(NULL, "|", &saveptr); prod->status = token ? atoi(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr); prod->created_at = token ? (time_t)atoll(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr); prod->updated_at = token ? (time_t)atoll(token) : 0;
-
-        hash_insert(g_product_hash, prod->id, prod);
-        if (strlen(prod->barcode) > 0) {
-            hash_insert(g_barcode_hash, prod->barcode, prod);
-        }
-
-        /* 更新商品ID计数器（兼容旧格式 "P0001" 和旧手动ID） */
-        if (prod->id[0] == 'P' || prod->id[0] == 'p') {
-            int num = atoi(prod->id + 1);
-            if (num > g_product_id_counter) {
-                g_product_id_counter = num;
-            }
-        }
-        /* 旧数据的手动ID也计入全局计数器，防止冲突 */
-        int id_num = atoi(prod->id);
-        if (id_num > g_auto_id_counter) {
-            g_auto_id_counter = id_num;
-        }
-    }
-
-    fclose(fp);
     return 0;
 }
 
@@ -1249,46 +1143,47 @@ int load_products(void) {
  * 保存商品数据 - 原子写入版本
  */
 int save_products(void) {
-    char filepath[256];
-    size_t bufsize = 65536;
-    char *buffer = (char*)malloc(bufsize);
-    if (!buffer) return -1;
-    char *pos = buffer;
-    size_t remaining = bufsize;
+    return sm_app_repository() ? 0 : -1;
+}
 
-    snprintf(filepath, sizeof(filepath), "%s/product.txt", DATA_DIR);
-
-    for (int i = 0; i < g_product_hash->size; i++) {
-        HashNode *node = g_product_hash->buckets[i];
-        while (node) {
-            Product *prod = (Product*)node->data;
-            int written = snprintf(pos, remaining, "%s|%s|%s|%.2f|%.2f|%d|%d|%s|%s|%d|%lld|%lld\n",
-                prod->id, prod->name, prod->barcode, prod->price, prod->cost,
-                prod->stock, prod->min_stock, prod->category_id, prod->supplier_id,
-                prod->status, (long long)prod->created_at, (long long)prod->updated_at);
-
-            if (written >= (int)remaining) {
-                size_t offset = pos - buffer;
-                bufsize *= 2;
-                char *tmp_buf = (char*)realloc(buffer, bufsize);
-                if (!tmp_buf) { free(buffer); return -1; }
-                buffer = tmp_buf;
-                pos = buffer + offset;
-                remaining = bufsize - offset;
-                written = snprintf(pos, remaining, "%s|%s|%s|%.2f|%.2f|%d|%d|%s|%s|%d|%lld|%lld\n",
-                    prod->id, prod->name, prod->barcode, prod->price, prod->cost,
-                    prod->stock, prod->min_stock, prod->category_id, prod->supplier_id,
-                    prod->status, (long long)prod->created_at, (long long)prod->updated_at);
-            }
-            pos += written;
-            remaining -= written;
-            node = node->next;
+static Product **list_products_from_service(int low_stock, int *count) {
+    Product *values = NULL;
+    Product **list = NULL;
+    size_t value_count = 0;
+    size_t i;
+    sm_repo_status status;
+    if (!count) return NULL;
+    *count = 0;
+    status = low_stock
+                 ? sm_service_product_list_low_stock(&values, &value_count)
+                 : sm_service_product_list(&values, &value_count);
+    if (status != SM_REPO_OK || value_count > 2147483647u) return NULL;
+    if (value_count != 0) {
+        list = (Product **)calloc(value_count, sizeof(*list));
+        if (!list) {
+            sm_service_array_free(values);
+            return NULL;
         }
     }
+    for (i = 0; i < value_count; ++i) {
+        list[i] = cache_product(&values[i]);
+        if (!list[i]) {
+            free(list);
+            sm_service_array_free(values);
+            return NULL;
+        }
+    }
+    sm_service_array_free(values);
+    *count = (int)value_count;
+    return list;
+}
 
-    int result = atomic_write(filepath, buffer);
-    free(buffer);
-    return result;
+Product **list_products(int *count) {
+    return list_products_from_service(0, count);
+}
+
+Product **list_low_stock_products(int *count) {
+    return list_products_from_service(1, count);
 }
 
 // ==================== 供应商数据操作 ====================
@@ -1296,17 +1191,34 @@ int save_products(void) {
 /**
  * 添加供应商
  */
-int add_supplier(Supplier *sup) {
-    sup->id = generate_id();
-    sup->status = 1;
-    
-    Supplier *new_sup = (Supplier*)malloc(sizeof(Supplier));
-    *new_sup = *sup;
-    
+static Supplier *cache_supplier(const Supplier *value) {
     char key[32];
-    sprintf(key, "%d", sup->id);
-    hash_insert(g_supplier_hash, key, new_sup);
-    
+    Supplier *cached;
+    Supplier *copy;
+    if (!value || value->id <= 0) return NULL;
+    snprintf(key, sizeof(key), "%d", value->id);
+    cached = (Supplier *)hash_search(g_supplier_hash, key);
+    if (cached) {
+        *cached = *value;
+        return cached;
+    }
+    copy = (Supplier *)malloc(sizeof(*copy));
+    if (!copy) return NULL;
+    *copy = *value;
+    if (hash_insert(g_supplier_hash, key, copy) != 0) {
+        free(copy);
+        return NULL;
+    }
+    return copy;
+}
+
+int add_supplier(Supplier *sup) {
+    if (!sup) return -1;
+    sup->id = 0;
+    sup->status = STATUS_ACTIVE;
+    if (sm_service_supplier_create(sup) != SM_REPO_OK) return -1;
+    (void)cache_supplier(sup);
+    if (sup->id > g_auto_id_counter) g_auto_id_counter = sup->id;
     return sup->id;
 }
 
@@ -1315,46 +1227,20 @@ int add_supplier(Supplier *sup) {
  */
 Supplier* find_supplier_by_id(int id) {
     char key[32];
-    sprintf(key, "%d", id);
-    return (Supplier*)hash_search(g_supplier_hash, key);
+    Supplier value;
+    Supplier *cached;
+    if (id <= 0) return NULL;
+    snprintf(key, sizeof(key), "%d", id);
+    cached = (Supplier *)hash_search(g_supplier_hash, key);
+    if (cached) return cached;
+    if (sm_service_supplier_get(id, &value) != SM_REPO_OK) return NULL;
+    return cache_supplier(&value);
 }
 
 /**
  * 加载供应商
  */
 int load_suppliers(void) {
-    char filepath[256];
-    snprintf(filepath, sizeof(filepath), "%s/supplier.txt", DATA_DIR);
-
-    FILE *fp = fopen(filepath, "r");
-    if (!fp) return 0;
-
-    char line[MAX_LINE_LEN];
-    while (fgets(line, sizeof(line), fp)) {
-        trim(line);
-        if (strlen(line) == 0) continue;
-
-        Supplier *sup = (Supplier*)malloc(sizeof(Supplier));
-        memset(sup, 0, sizeof(Supplier));
-        char *token;
-        char *saveptr;
-        token = strtok_r(line, "|", &saveptr); if (token) strncpy(sup->name, token, MAX_NAME_LEN-1);
-        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(sup->contact, token, 49);
-        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(sup->phone, token, 19);
-        token = strtok_r(NULL, "|", &saveptr); if (token) strncpy(sup->address, token, 255);
-        token = strtok_r(NULL, "|", &saveptr); sup->id = token ? atoi(token) : 0;
-        token = strtok_r(NULL, "|", &saveptr); sup->status = token ? atoi(token) : 0;
-
-        char key[32];
-        sprintf(key, "%d", sup->id);
-        hash_insert(g_supplier_hash, key, sup);
-
-        if (sup->id > g_auto_id_counter) {
-            g_auto_id_counter = sup->id;
-        }
-    }
-
-    fclose(fp);
     return 0;
 }
 
@@ -1362,42 +1248,7 @@ int load_suppliers(void) {
  * 保存供应商 - 原子写入版本
  */
 int save_suppliers(void) {
-    char filepath[256];
-    size_t bufsize = 65536;
-    char *buffer = (char*)malloc(bufsize);
-    if (!buffer) return -1;
-    char *pos = buffer;
-    size_t remaining = bufsize;
-
-    snprintf(filepath, sizeof(filepath), "%s/supplier.txt", DATA_DIR);
-
-    for (int i = 0; i < g_supplier_hash->size; i++) {
-        HashNode *node = g_supplier_hash->buckets[i];
-        while (node) {
-            Supplier *sup = (Supplier*)node->data;
-            int written = snprintf(pos, remaining, "%s|%s|%s|%s|%d|%d\n",
-                sup->name, sup->contact, sup->phone, sup->address, sup->id, sup->status);
-
-            if (written >= (int)remaining) {
-                size_t offset = pos - buffer;
-                bufsize *= 2;
-                char *tmp_buf = (char*)realloc(buffer, bufsize);
-                if (!tmp_buf) { free(buffer); return -1; }
-                buffer = tmp_buf;
-                pos = buffer + offset;
-                remaining = bufsize - offset;
-                written = snprintf(pos, remaining, "%s|%s|%s|%s|%d|%d\n",
-                    sup->name, sup->contact, sup->phone, sup->address, sup->id, sup->status);
-            }
-            pos += written;
-            remaining -= written;
-            node = node->next;
-        }
-    }
-
-    int result = atomic_write(filepath, buffer);
-    free(buffer);
-    return result;
+    return sm_app_repository() ? 0 : -1;
 }
 
 // ==================== 系统配置 ====================
@@ -1414,59 +1265,15 @@ SystemConfig g_config = {
  * 加载系统配置
  */
 int load_config(void) {
-    char filepath[256];
-    snprintf(filepath, sizeof(filepath), "%s/config.txt", DATA_DIR);
-    
-    FILE *fp = fopen(filepath, "r");
-    if (!fp) return 0;
-    
-    char line[MAX_LINE_LEN];
-    while (fgets(line, sizeof(line), fp)) {
-        trim(line);
-        if (strlen(line) == 0 || line[0] == '#') continue;
-        
-        char key[64], value[256];
-        if (sscanf(line, "%63[^=]=%255[^\n]", key, value) == 2) {
-            trim(key);
-            trim(value);
-            
-            if (strcmp(key, "shop_name") == 0) strncpy(g_config.shop_name, value, 99);
-            else if (strcmp(key, "shop_address") == 0) strncpy(g_config.shop_address, value, 255);
-            else if (strcmp(key, "shop_phone") == 0) strncpy(g_config.shop_phone, value, 19);
-            else if (strcmp(key, "tax_rate") == 0) g_config.tax_rate = atof(value);
-            else if (strcmp(key, "auto_backup_interval") == 0) g_config.auto_backup_interval = atoi(value);
-            else if (strcmp(key, "monthly_fixed_cost") == 0) g_config.monthly_fixed_cost = atof(value);
-        }
-    }
-    
-    fclose(fp);
-    return 0;
+    sm_repo_status status = sm_service_config_get(&g_config);
+    if (status == SM_REPO_OK) return 0;
+    if (status != SM_REPO_NOT_FOUND) return -1;
+    return sm_service_config_put(&g_config) == SM_REPO_OK ? 0 : -1;
 }
 
 /**
  * 保存系统配置
  */
 int save_config(void) {
-    char filepath[256];
-    char content[2048];
-    
-    snprintf(filepath, sizeof(filepath), "%s/config.txt", DATA_DIR);
-    
-    snprintf(content, sizeof(content),
-        "# 超市管理系统配置\n"
-        "shop_name=%s\n"
-        "shop_address=%s\n"
-        "shop_phone=%s\n"
-        "tax_rate=%.2f\n"
-        "auto_backup_interval=%d\n"
-        "monthly_fixed_cost=%.2f\n",
-        g_config.shop_name,
-        g_config.shop_address,
-        g_config.shop_phone,
-        g_config.tax_rate,
-        g_config.auto_backup_interval,
-        g_config.monthly_fixed_cost
-    );
-    
-    return atomic_write(filepath, content);
+    return sm_service_config_put(&g_config) == SM_REPO_OK ? 0 : -1;
 }

@@ -16,6 +16,32 @@
 #include "supermarket.h"
 #include <stdlib.h>
 
+#define create_schedule sm_legacy_create_schedule
+#define update_schedule sm_legacy_update_schedule
+#define find_schedule sm_legacy_find_schedule
+#define find_schedule_by_employee_week sm_legacy_find_schedule_by_employee_week
+#define batch_create_schedule sm_legacy_batch_create_schedule
+#define list_employee_schedules sm_legacy_list_employee_schedules
+#define list_week_schedules sm_legacy_list_week_schedules
+#define print_schedule_table sm_legacy_print_schedule_table
+#define count_shifts_by_type sm_legacy_count_shifts_by_type
+#define load_schedules sm_legacy_load_schedules
+#define save_schedule sm_legacy_save_schedule
+#define delete_schedule sm_legacy_delete_schedule
+
+int sm_legacy_create_schedule(Schedule *);
+int sm_legacy_update_schedule(int, char [7][4]);
+Schedule *sm_legacy_find_schedule(int);
+Schedule *sm_legacy_find_schedule_by_employee_week(int, int, int);
+int sm_legacy_batch_create_schedule(int, int, int, char [7][4]);
+Schedule **sm_legacy_list_employee_schedules(int, int *);
+Schedule **sm_legacy_list_week_schedules(int, int, int *);
+void sm_legacy_print_schedule_table(int, int);
+void sm_legacy_count_shifts_by_type(int, int);
+int sm_legacy_load_schedules(void);
+int sm_legacy_save_schedule(Schedule *);
+int sm_legacy_delete_schedule(int);
+
 // ==================== 排班数据 ====================
 static Schedule *g_schedules = NULL;  // 排班记录链表
 

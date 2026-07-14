@@ -14,11 +14,14 @@
  *   - HTML 文件（带 CSS 样式的表格）
  *
  * 盈亏报告的 COGS 计算逻辑：
- *   从 stock_log.txt 中筛选"出库"记录，
+ *   从库存账本 type/time 索引中筛选"出库"记录，
  *   每条出库记录的成本 = 该商品的进价（优先从采购单历史取，否则用商品表进价）。
  */
 
 #include "supermarket.h"
+#include "app/sm_sales_service.h"
+#include "app/sm_inventory_service.h"
+#include "app/sm_purchase_service.h"
 #include <stdlib.h>
 
 #ifdef _WIN32
@@ -83,95 +86,42 @@ void generate_sales_report(time_t start, time_t end, const char *format) {
     float cash_total = 0, wechat_total = 0, alipay_total = 0;
     int cash_count = 0, wechat_count = 0, alipay_count = 0;
     
-    // 读取销售文件
-    char filepath[256];
-    snprintf(filepath, sizeof(filepath), "%s/sales.txt", DATA_DIR);
-    
-    FILE *fp = fopen(filepath, "r");
-    if (!fp) {
+    Sale *sales = NULL;
+    size_t sale_count = 0;
+    size_t sale_index;
+    if (sm_service_sale_list_completed(&sales, &sale_count) != SM_REPO_OK) {
         printf("无销售记录\n");
         return;
     }
-    
-    char line[MAX_LINE_LEN];
+
     printf("%-8s %-8s %-12s %-10s %-8s %-10s %-10s\n",
            "订单号", "收银员", "时间", "原价", "优惠", "实收", "支付方式");
     printf("--------------------------------------------------------------------\n");
     
-    while (fgets(line, sizeof(line), fp)) {
-        trim(line);
-        if (strlen(line) == 0) continue;
-        
-        // 复制一份用于分割
-        char copy[MAX_LINE_LEN];
-        strncpy(copy, line, sizeof(copy) - 1);
-        copy[sizeof(copy) - 1] = '\0';
-        
-        Sale sale;
-        memset(&sale, 0, sizeof(Sale));
-        
-        char *token;
-        char *saveptr;
-        
-        // 解析: id|cashier_id|member_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
-        token = strtok_r(copy, "|", &saveptr);
-        sale.id = token ? atoi(token) : 0;
-        
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.cashier_id = token ? atoi(token) : 0;
-
-        token = strtok_r(NULL, "|", &saveptr);  // member_id（跳过）
-
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.total_amount = token ? atof(token) : 0.0f;
-        
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.discount = token ? atof(token) : 0.0f;
-        
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.final_amount = token ? atof(token) : 0.0f;
-        
-        token = strtok_r(NULL, "|", &saveptr);
-        if (token) strncpy(sale.payment_method, token, sizeof(sale.payment_method) - 1);
-        
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.status = token ? atoi(token) : 0;
-        
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.created_at = token ? (time_t)atoll(token) : 0;
-        
-        token = strtok_r(NULL, "|", &saveptr);
-        sale.completed_at = token ? (time_t)atoll(token) : 0;
-        
-        if (sale.created_at < start || sale.created_at > end) continue;
-        if (sale.status != SALE_COMPLETED) continue;
-        
-        total_orders++;
-        total_amount += sale.total_amount;
-        total_discount += sale.discount;  // 使用存储的优惠金额
-        
+    for (sale_index = 0; sale_index < sale_count; ++sale_index) {
+        Sale *sale = &sales[sale_index];
         char time_str[32];
-        format_time(sale.created_at, time_str);
-        
+        if (sale->completed_at < start || sale->completed_at > end) continue;
+        total_orders++;
+        total_amount += sale->total_amount;
+        total_discount += sale->discount;
+        format_time(sale->completed_at, time_str);
         printf("%-8d %-8d %-12s %-10.2f %-8.2f %-10.2f %-10s\n",
-               sale.id, sale.cashier_id, time_str,
-               sale.total_amount, sale.discount, sale.final_amount,
-               sale.payment_method);
-        
-        // 按支付方式统计
-        if (strcmp(sale.payment_method, "现金") == 0) {
-            cash_total += sale.final_amount;
+               sale->id, sale->cashier_id, time_str,
+               sale->total_amount, sale->discount, sale->final_amount,
+               sale->payment_method);
+        if (strcmp(sale->payment_method, "现金") == 0) {
+            cash_total += sale->final_amount;
             cash_count++;
-        } else if (strcmp(sale.payment_method, "微信") == 0) {
-            wechat_total += sale.final_amount;
+        } else if (strcmp(sale->payment_method, "微信") == 0) {
+            wechat_total += sale->final_amount;
             wechat_count++;
-        } else if (strcmp(sale.payment_method, "支付宝") == 0) {
-            alipay_total += sale.final_amount;
+        } else if (strcmp(sale->payment_method, "支付宝") == 0) {
+            alipay_total += sale->final_amount;
             alipay_count++;
         }
     }
-    
-    fclose(fp);
+    sm_service_sales_array_free(sales);
     
     // 打印汇总
     printf("--------------------------------------------------------------------\n");
@@ -208,66 +158,24 @@ int export_sales_csv(time_t start, time_t end, const char *filename) {
     fprintf(fp, "\xEF\xBB\xBF");
     fprintf(fp, "订单号,收银员ID,时间,原价,优惠,实收,支付方式,状态\n");
     
-    char sales_path[256];
-    snprintf(sales_path, sizeof(sales_path), "%s/sales.txt", DATA_DIR);
-    
-    FILE *src = fopen(sales_path, "r");
-    if (src) {
-        char line[MAX_LINE_LEN];
-        while (fgets(line, sizeof(line), src)) {
-            trim(line);
-            if (strlen(line) == 0) continue;
-            
-            // 复制一份用于分割，避免修改原字符串
-            char copy[MAX_LINE_LEN];
-            strncpy(copy, line, sizeof(copy) - 1);
-            copy[sizeof(copy) - 1] = '\0';
-            
-            Sale sale;
-            memset(&sale, 0, sizeof(Sale));
-            
-            char *token;
-            char *saveptr;
-            
-            // 解析字段: id|cashier_id|member_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
-            token = strtok_r(copy, "|", &saveptr);
-            sale.id = token ? atoi(token) : 0;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.cashier_id = token ? atoi(token) : 0;
-
-            token = strtok_r(NULL, "|", &saveptr);  // member_id（跳过）
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.total_amount = token ? atof(token) : 0.0f;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.discount = token ? atof(token) : 0.0f;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.final_amount = token ? atof(token) : 0.0f;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            if (token) strncpy(sale.payment_method, token, sizeof(sale.payment_method) - 1);
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.status = token ? atoi(token) : 0;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.created_at = token ? (time_t)atoll(token) : 0;
-
-            if (sale.created_at < start || sale.created_at > end) continue;
-
-            char time_str[32];
-            format_time(sale.created_at, time_str);
-
-            fprintf(fp, "%d,%d,%s,%.2f,%.2f,%.2f,%s,%s\n",
-                sale.id, sale.cashier_id, time_str,
-                sale.total_amount, sale.discount, sale.final_amount,
-                sale.payment_method,
-                sale.status == SALE_COMPLETED ? "已完成" : "已退款");
+    {
+        Sale *sales = NULL;
+        size_t count = 0;
+        size_t i;
+        if (sm_service_sale_list_completed(&sales, &count) == SM_REPO_OK) {
+            for (i = 0; i < count; ++i) {
+                char time_str[32];
+                if (sales[i].completed_at < start ||
+                    sales[i].completed_at > end)
+                    continue;
+                format_time(sales[i].completed_at, time_str);
+                fprintf(fp, "%d,%d,%s,%.2f,%.2f,%.2f,%s,已完成\n",
+                        sales[i].id, sales[i].cashier_id, time_str,
+                        sales[i].total_amount, sales[i].discount,
+                        sales[i].final_amount, sales[i].payment_method);
+            }
         }
-        fclose(src);
+        sm_service_sales_array_free(sales);
     }
 
     fclose(fp);
@@ -319,70 +227,28 @@ int export_sales_html(time_t start, time_t end, const char *filename) {
     float total = 0;
     int count = 0;
     
-    char sales_path[256];
-    snprintf(sales_path, sizeof(sales_path), "%s/sales.txt", DATA_DIR);
-    
-    FILE *src = fopen(sales_path, "r");
-    if (src) {
-        char line[MAX_LINE_LEN];
-        while (fgets(line, sizeof(line), src)) {
-            trim(line);
-            if (strlen(line) == 0) continue;
-            
-            // 复制一份用于分割
-            char copy[MAX_LINE_LEN];
-            strncpy(copy, line, sizeof(copy) - 1);
-            copy[sizeof(copy) - 1] = '\0';
-            
-            Sale sale;
-            memset(&sale, 0, sizeof(Sale));
-            
-            char *token;
-            char *saveptr;
-            
-            token = strtok_r(copy, "|", &saveptr);
-            sale.id = token ? atoi(token) : 0;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.cashier_id = token ? atoi(token) : 0;
-
-            token = strtok_r(NULL, "|", &saveptr);  // member_id（跳过）
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.total_amount = token ? atof(token) : 0.0f;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.discount = token ? atof(token) : 0.0f;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.final_amount = token ? atof(token) : 0.0f;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            if (token) strncpy(sale.payment_method, token, sizeof(sale.payment_method) - 1);
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.status = token ? atoi(token) : 0;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            sale.created_at = token ? (time_t)atoll(token) : 0;
-
-            if (sale.created_at < start || sale.created_at > end) continue;
-            
-            char time_str[32];
-            format_time(sale.created_at, time_str);
-            
-            fprintf(fp, "<tr><td>%d</td><td>%d</td><td>%s</td>"
-                       "<td>¥%.2f</td><td>¥%.2f</td><td>¥%.2f</td>"
-                       "<td>%s</td><td>%s</td></tr>\n",
-                sale.id, sale.cashier_id, time_str,
-                sale.total_amount, sale.discount, sale.final_amount,
-                sale.payment_method,
-                sale.status == SALE_COMPLETED ? "已完成" : "已退款");
-            
-            total += sale.final_amount;
-            count++;
+    {
+        Sale *sales = NULL;
+        size_t sale_count = 0;
+        size_t i;
+        if (sm_service_sale_list_completed(&sales, &sale_count) == SM_REPO_OK) {
+            for (i = 0; i < sale_count; ++i) {
+                char time_str[32];
+                if (sales[i].completed_at < start ||
+                    sales[i].completed_at > end)
+                    continue;
+                format_time(sales[i].completed_at, time_str);
+                fprintf(fp, "<tr><td>%d</td><td>%d</td><td>%s</td>"
+                            "<td>¥%.2f</td><td>¥%.2f</td><td>¥%.2f</td>"
+                            "<td>%s</td><td>已完成</td></tr>\n",
+                        sales[i].id, sales[i].cashier_id, time_str,
+                        sales[i].total_amount, sales[i].discount,
+                        sales[i].final_amount, sales[i].payment_method);
+                total += sales[i].final_amount;
+                ++count;
+            }
         }
-        fclose(src);
+        sm_service_sales_array_free(sales);
     }
     
     fprintf(fp, "</table>\n");
@@ -404,6 +270,8 @@ int export_sales_html(time_t start, time_t end, const char *filename) {
  * 生成库存报表
  */
 void generate_inventory_report(const char *format) {
+    int product_count = 0;
+    Product **products = list_products(&product_count);
     printf("\n========== 库存报表 (%s) ==========\n",
            format == NULL ? "控制台" : format);
     
@@ -416,27 +284,22 @@ void generate_inventory_report(const char *format) {
            "商品ID", "商品名称", "库存", "最低库存", "成本价", "零售价");
     printf("------------------------------------------------------------\n");
     
-    for (int i = 0; i < g_product_hash->size; i++) {
-        HashNode *node = g_product_hash->buckets[i];
-        while (node) {
-            Product *prod = (Product*)node->data;
-            if (prod->status == 1) {
-                total_products++;
-                total_cost_value += prod->stock * prod->cost;
-                total_sale_value += prod->stock * prod->price;
-                
-                if (prod->stock <= prod->min_stock) {
-                    low_stock_count++;
-                    printf("[预警] ");
-                }
-                
-                printf("%-12s %-20s %-8d %-8d %-10.2f %-10.2f\n",
-                       prod->id, prod->name, prod->stock, prod->min_stock,
-                       prod->cost, prod->price);
+    for (int i = 0; i < product_count; ++i) {
+        Product *prod = products[i];
+        if (prod->status == STATUS_ACTIVE) {
+            total_products++;
+            total_cost_value += prod->stock * prod->cost;
+            total_sale_value += prod->stock * prod->price;
+            if (prod->stock <= prod->min_stock) {
+                low_stock_count++;
+                printf("[预警] ");
             }
-            node = node->next;
+            printf("%-12s %-20s %-8d %-8d %-10.2f %-10.2f\n",
+                   prod->id, prod->name, prod->stock, prod->min_stock,
+                   prod->cost, prod->price);
         }
     }
+    free(products);
     
     printf("------------------------------------------------------------\n");
     printf("商品总数: %d\n", total_products);
@@ -453,12 +316,15 @@ void generate_inventory_report(const char *format) {
  */
 int export_inventory_csv(const char *filename) {
     char filepath[256];
+    int product_count = 0;
+    Product **products = list_products(&product_count);
 
     ensure_dir(OUTPUT_DIR);
     snprintf(filepath, sizeof(filepath), "%s/%s", OUTPUT_DIR, filename);
 
     FILE *fp = fopen(filepath, "w");
     if (!fp) {
+        free(products);
         printf("[错误] 无法创建文件: %s\n", filepath);
         return -1;
     }
@@ -472,32 +338,27 @@ int export_inventory_csv(const char *filename) {
     float total_sale_value = 0;
     int low_stock_count = 0;
 
-    for (int i = 0; i < g_product_hash->size; i++) {
-        HashNode *node = g_product_hash->buckets[i];
-        while (node) {
-            Product *prod = (Product*)node->data;
-            if (prod->status == 1) {
-                total_products++;
-                float item_cost = prod->stock * prod->cost;
-                float item_sale = prod->stock * prod->price;
-                total_cost_value += item_cost;
-                total_sale_value += item_sale;
-
-                const char *status_str = "正常";
-                if (prod->stock <= prod->min_stock) {
-                    status_str = "库存预警";
-                    low_stock_count++;
-                }
-
-                fprintf(fp, "%s,%s,%s,%d,%d,%.2f,%.2f,%.2f,%.2f,%s\n",
-                        prod->id, prod->name, prod->barcode,
-                        prod->stock, prod->min_stock,
-                        prod->cost, prod->price,
-                        item_cost, item_sale, status_str);
+    for (int i = 0; i < product_count; ++i) {
+        Product *prod = products[i];
+        if (prod->status == STATUS_ACTIVE) {
+            total_products++;
+            float item_cost = prod->stock * prod->cost;
+            float item_sale = prod->stock * prod->price;
+            total_cost_value += item_cost;
+            total_sale_value += item_sale;
+            const char *status_str = "正常";
+            if (prod->stock <= prod->min_stock) {
+                status_str = "库存预警";
+                low_stock_count++;
             }
-            node = node->next;
+            fprintf(fp, "%s,%s,%s,%d,%d,%.2f,%.2f,%.2f,%.2f,%s\n",
+                    prod->id, prod->name, prod->barcode,
+                    prod->stock, prod->min_stock,
+                    prod->cost, prod->price,
+                    item_cost, item_sale, status_str);
         }
     }
+    free(products);
 
     /* 汇总行 */
     fprintf(fp, "\n汇总,,,,,,,\n");
@@ -516,12 +377,15 @@ int export_inventory_csv(const char *filename) {
  */
 int export_inventory_html(const char *filename) {
     char filepath[256];
+    int product_count = 0;
+    Product **products = list_products(&product_count);
 
     ensure_dir(OUTPUT_DIR);
     snprintf(filepath, sizeof(filepath), "%s/%s", OUTPUT_DIR, filename);
 
     FILE *fp = fopen(filepath, "w");
     if (!fp) {
+        free(products);
         printf("[错误] 无法创建文件: %s\n", filepath);
         return -1;
     }
@@ -556,34 +420,29 @@ int export_inventory_html(const char *filename) {
     float total_sale_value = 0;
     int low_stock_count = 0;
 
-    for (int i = 0; i < g_product_hash->size; i++) {
-        HashNode *node = g_product_hash->buckets[i];
-        while (node) {
-            Product *prod = (Product*)node->data;
-            if (prod->status == 1) {
-                total_products++;
-                float item_cost = prod->stock * prod->cost;
-                float item_sale = prod->stock * prod->price;
-                total_cost_value += item_cost;
-                total_sale_value += item_sale;
-
-                int is_low = (prod->stock <= prod->min_stock);
-                if (is_low) low_stock_count++;
-
-                fprintf(fp, "<tr%s><td>%s</td><td>%s</td><td>%s</td>"
-                           "<td>%d</td><td>%d</td><td>¥%.2f</td>"
-                           "<td>¥%.2f</td><td>¥%.2f</td><td>¥%.2f</td>"
-                           "<td>%s</td></tr>\n",
-                        is_low ? " class=\"warning\"" : "",
-                        prod->id, prod->name, prod->barcode,
-                        prod->stock, prod->min_stock,
-                        prod->cost, prod->price,
-                        item_cost, item_sale,
-                        is_low ? "⚠ 库存预警" : "正常");
-            }
-            node = node->next;
+    for (int i = 0; i < product_count; ++i) {
+        Product *prod = products[i];
+        if (prod->status == STATUS_ACTIVE) {
+            total_products++;
+            float item_cost = prod->stock * prod->cost;
+            float item_sale = prod->stock * prod->price;
+            int is_low = (prod->stock <= prod->min_stock);
+            total_cost_value += item_cost;
+            total_sale_value += item_sale;
+            if (is_low) low_stock_count++;
+            fprintf(fp, "<tr%s><td>%s</td><td>%s</td><td>%s</td>"
+                       "<td>%d</td><td>%d</td><td>¥%.2f</td>"
+                       "<td>¥%.2f</td><td>¥%.2f</td><td>¥%.2f</td>"
+                       "<td>%s</td></tr>\n",
+                    is_low ? " class=\"warning\"" : "",
+                    prod->id, prod->name, prod->barcode,
+                    prod->stock, prod->min_stock,
+                    prod->cost, prod->price,
+                    item_cost, item_sale,
+                    is_low ? "⚠ 库存预警" : "正常");
         }
     }
+    free(products);
 
     fprintf(fp, "</table>\n");
 
@@ -619,8 +478,14 @@ void generate_purchase_report(time_t start, time_t end, const char *format) {
            "订单号", "供应商", "创建时间", "金额", "状态");
     printf("------------------------------------------------------------\n");
     
-    Purchase *pur = g_purchases;
-    while (pur) {
+    Purchase *purchases = NULL;
+    size_t purchase_count = 0, purchase_index;
+    if (sm_service_purchase_list(-1, &purchases,
+                                 &purchase_count) != SM_REPO_OK)
+        purchase_count = 0;
+    for (purchase_index = 0; purchase_index < purchase_count;
+         ++purchase_index) {
+        Purchase *pur = &purchases[purchase_index];
         if (pur->created_at >= start && pur->created_at <= end) {
             char time_str[32];
             format_time(pur->created_at, time_str);
@@ -644,8 +509,8 @@ void generate_purchase_report(time_t start, time_t end, const char *format) {
                     break;
             }
         }
-        pur = pur->next;
     }
+    sm_service_purchase_array_free(purchases);
     
     printf("------------------------------------------------------------\n");
     printf("待审核: %d单, ¥%.2f\n", count_pending, total_pending);
@@ -661,29 +526,34 @@ void generate_purchase_report(time_t start, time_t end, const char *format) {
  * 优先使用采购单中该商品的最新进价，如果不存在则使用商品表的进价
  */
 static float get_product_cost(const char *product_id, time_t before_date) {
-    // 先查找采购单中的历史进价
-    PurchaseItem *item = g_purchase_items;
+    Purchase *purchases = NULL;
+    size_t purchase_count = 0, purchase_index;
     time_t latest_date = 0;
     float latest_cost = 0;
-    
-    while (item) {
-        if (strcmp(item->product_id, product_id) == 0) {
-            // 查找对应的采购单日期
-            Purchase *pur = g_purchases;
-            while (pur) {
-                if (pur->id == item->purchase_id && 
-                    pur->completed_at <= before_date &&
-                    pur->status == PURCHASE_COMPLETED &&
-                    pur->completed_at > latest_date) {
-                    latest_date = pur->completed_at;
-                    latest_cost = item->price;
+    if (sm_service_purchase_list(PURCHASE_COMPLETED, &purchases,
+                                 &purchase_count) == SM_REPO_OK) {
+        for (purchase_index = 0; purchase_index < purchase_count;
+             ++purchase_index) {
+            PurchaseItem *items = NULL;
+            size_t item_count = 0, item_index;
+            if (purchases[purchase_index].completed_at > before_date ||
+                purchases[purchase_index].completed_at <= latest_date)
+                continue;
+            if (sm_service_purchase_item_list(
+                    (uint64_t)purchases[purchase_index].id,
+                    &items, &item_count) != SM_REPO_OK)
+                continue;
+            for (item_index = 0; item_index < item_count; ++item_index) {
+                if (strcmp(items[item_index].product_id, product_id) == 0) {
+                    latest_date = purchases[purchase_index].completed_at;
+                    latest_cost = items[item_index].price;
                     break;
                 }
-                pur = pur->next;
             }
+            sm_service_purchase_array_free(items);
         }
-        item = item->next;
     }
+    sm_service_purchase_array_free(purchases);
     
     // 如果找到了历史进价，返回它
     if (latest_cost > 0) {
@@ -716,83 +586,55 @@ void generate_profit_loss_report(time_t start, time_t end) {
     float total_discount = 0;   // 总优惠
     int completed_orders = 0;
 
-    char sales_path[256];
-    snprintf(sales_path, sizeof(sales_path), "%s/sales.txt", DATA_DIR);
-
-    FILE *fp = fopen(sales_path, "r");
-    if (fp) {
-        char line[MAX_LINE_LEN];
-        while (fgets(line, sizeof(line), fp)) {
-            trim(line);
-            if (strlen(line) == 0) continue;
-
-            char copy[MAX_LINE_LEN];
-            strncpy(copy, line, sizeof(copy) - 1);
-            copy[sizeof(copy) - 1] = '\0';
-
-            char *token;
-            char *saveptr;
-
-            // 解析: id|cashier_id|member_id|total_amount|discount|final_amount|payment_method|status|created_at|completed_at
-            token = strtok_r(copy, "|", &saveptr);  // id
-            token = strtok_r(NULL, "|", &saveptr);   // cashier_id
-            token = strtok_r(NULL, "|", &saveptr);   // member_id
-
-            float total_amount = 0, discount = 0, final_amount = 0;
-            int status = 0;
-            time_t created_at = 0;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            total_amount = token ? atof(token) : 0.0f;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            discount = token ? atof(token) : 0.0f;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            final_amount = token ? atof(token) : 0.0f;
-
-            token = strtok_r(NULL, "|", &saveptr);  // payment_method
-
-            token = strtok_r(NULL, "|", &saveptr);
-            status = token ? atoi(token) : 0;
-
-            token = strtok_r(NULL, "|", &saveptr);
-            created_at = token ? (time_t)atoll(token) : 0;
-
-            if (created_at >= start && created_at <= end && status == SALE_COMPLETED) {
-                sales_original += total_amount;      // 原价合计
-                total_discount += discount;           // 总优惠
-                sales_revenue += final_amount;        // 实收
-                completed_orders++;
+    {
+        Sale *sales = NULL;
+        size_t count = 0;
+        size_t i;
+        if (sm_service_sale_list_completed(&sales, &count) == SM_REPO_OK) {
+            for (i = 0; i < count; ++i) {
+                if (sales[i].completed_at < start ||
+                    sales[i].completed_at > end)
+                    continue;
+                sales_original += sales[i].total_amount;
+                total_discount += sales[i].discount;
+                sales_revenue += sales[i].final_amount;
+                ++completed_orders;
             }
         }
-        fclose(fp);
+        sm_service_sales_array_free(sales);
     }
 
     // 2. 计算销售商品的真实成本（从库存变动日志中获取出库记录）
     float cogs = 0;  // Cost of Goods Sold 销售成本
     {
-        int log_count = 0;
-        StockLog *logs = query_stock_logs(NULL, start, end, &log_count);
-        for (int i = 0; i < log_count; i++) {
-            if (strcmp(logs[i].type, "出库") == 0) {
-                // 优先从采购记录中获取进价，否则用商品表进价
-                float cost = get_product_cost(logs[i].product_id, logs[i].created_at);
+        StockLog *logs = NULL;
+        size_t log_count = 0;
+        size_t i;
+        if (sm_service_stock_log_list(NULL, "出库", start, end,
+                                      &logs, &log_count) == SM_REPO_OK) {
+            for (i = 0; i < log_count; ++i) {
+                float cost = get_product_cost(logs[i].product_id,
+                                              logs[i].created_at);
                 cogs += cost * logs[i].quantity;
             }
         }
-        if (logs) free(logs);
+        sm_service_inventory_array_free(logs);
     }
 
     // 3. 采购成本统计（仅用于参考展示）
     float purchase_cost = 0;
-    Purchase *pur = g_purchases;
-    while (pur) {
-        if (pur->completed_at >= start && pur->completed_at <= end &&
-            pur->status == PURCHASE_COMPLETED) {
-            purchase_cost += pur->total_amount;
+    {
+        Purchase *purchases = NULL;
+        size_t purchase_count = 0, i;
+        if (sm_service_purchase_list(PURCHASE_COMPLETED, &purchases,
+                                     &purchase_count) == SM_REPO_OK) {
+            for (i = 0; i < purchase_count; ++i) {
+                if (purchases[i].completed_at >= start &&
+                    purchases[i].completed_at <= end)
+                    purchase_cost += purchases[i].total_amount;
+            }
         }
-        pur = pur->next;
+        sm_service_purchase_array_free(purchases);
     }
 
     // 4. 计算毛利 = 实收 - 销售成本

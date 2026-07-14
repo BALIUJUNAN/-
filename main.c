@@ -22,7 +22,7 @@
  *      show_sale_menu():
  *        扫码 → 创建挂单 → 显示明细 → 识别会员 → 计算折扣
  *        → 选择支付方式 → 现金/微信/支付宝/储值卡
- *        → 储值卡需验证密码 + 余额检查 + 失败回滚
+ *        → 储值卡需验证密码，余额与销售在同一数据库事务提交
  *        → complete_sale() → 扣库存 + 打小票 + 发积分
  *
  * 菜单结构：
@@ -47,6 +47,8 @@
 
 #include "supermarket.h"
 #include "ui.h"
+#include "app/sm_app_context.h"
+#include "app/sm_finance_service.h"
 #include <conio.h>
 #include <ctype.h>
 #include <limits.h>
@@ -130,7 +132,7 @@ int login(const char *username, const char *password) {
  *
  * 登出流程：
  *   1. 查找当前登录员工信息（用于日志显示）
- *   2. 记录登出事务日志到 transaction.log
+ *   2. 记录登出操作到 AbyssDB 审计日志
  *   3. 清理该收银员名下的所有挂单（防止切换账号后看到别人的订单）
  *   4. 重置全局登录状态
  */
@@ -144,7 +146,7 @@ void logout(void) {
             get_timestamp(timestamp);
             printf("[%s] 用户 %s [%s] 登出\n", timestamp, emp->name, emp->role);
 
-            /* write_transaction_log: 将操作记录追加到 data/transaction.log
+            /* write_transaction_log: 将操作记录写入 AbyssDB 审计日志
              * 参数: 类型, 关联ID, 操作名, 描述, 操作员ID */
             char log_msg[256];
             snprintf(log_msg, sizeof(log_msg), "用户 %s 登出系统", emp->name);
@@ -497,38 +499,18 @@ void show_product_menu(void) {
             }
             
             case 2: {
-                /* 先统计商品数量 */
                 int count = 0;
-                Product **products = NULL;
-                
-                for (int i = 0; i < g_product_hash->size; i++) {
-                    HashNode *node = g_product_hash->buckets[i];
-                    while (node) {
-                        Product *p = (Product*)node->data;
-                        if (p->status == 1) {
-                            count++;
-                        }
-                        node = node->next;
-                    }
-                }
-                
+                int active_count = 0;
+                Product **products = list_products(&count);
+                for (int i = 0; i < count; ++i)
+                    if (products[i]->status == STATUS_ACTIVE)
+                        products[active_count++] = products[i];
+                count = active_count;
+
                 if (count == 0) {
                     print_warning("暂无商品记录");
+                    free(products);
                     break;
-                }
-                
-                /* 收集商品数据 */
-                products = malloc(count * sizeof(Product*));
-                int idx = 0;
-                for (int i = 0; i < g_product_hash->size; i++) {
-                    HashNode *node = g_product_hash->buckets[i];
-                    while (node) {
-                        Product *p = (Product*)node->data;
-                        if (p->status == 1) {
-                            products[idx++] = p;
-                        }
-                        node = node->next;
-                    }
                 }
                 
                 /* 分页显示 */
@@ -755,7 +737,7 @@ void show_sale_menu(void) {
                  *   3. 识别会员（手机号/储值卡号 → 查找会员）
                  *   4. 计算综合折扣（单品促销 + 会员折扣 + 满减）
                  *   5. 选择支付方式（现金/微信/支付宝/储值卡）
-                 *   6. 储值卡支付需验证密码 + 余额检查 + 失败回滚
+                 *   6. 储值卡支付需验证密码，扣款与销售原子提交
                  *   7. 调用 complete_sale() 完成交易
                  *   8. complete_sale 内部: 扣库存 → 保存记录 → 打印小票 → 发放积分
                  * ============================================================ */
@@ -1005,32 +987,18 @@ void show_sale_menu(void) {
                     snprintf(confirm_msg, sizeof(confirm_msg),
                              "确认使用储值卡支付 ¥%.2f？", final_pay);
                     if (confirm_action(confirm_msg)) {
-                        /* consume_vip_card(): 从储值卡余额中扣款
-                         *   内部: 检查卡状态 → 检查余额 → 扣减 → 记录交易 → 保存文件
-                         *   返回: 0 成功, -1 失败 */
-                        if (consume_vip_card(vip_card->card_no, final_pay, sale_id,
-                                             g_current_user_id, "购物消费") == 0) {
-                            /* complete_sale(): 完成整个销售交易
-                             *   参数: 订单ID, 支付方式, 会员折扣%, 满减金额, 实收金额
-                             *   内部: 计算金额 → 扣库存 → 保存记录 → 打印小票 → 发放积分
-                             *        → 从挂单链表移除 → 从明细链表移除
-                             *   返回: 0 成功, -1 失败 */
-                            if (complete_sale(sale_id, method,
-                                              member_pct, override_amount,
-                                              final_pay) == 0) {
-                                print_success("储值卡支付完成！");
-                                print_success("消费金额: ¥%.2f，余额: ¥%.2f",
-                                              final_pay, vip_card->balance);
-                            } else {
-                                /* 事务回滚：complete_sale 失败，将已扣的储值卡金额退还 */
-                                print_error("销售完成失败，正在回滚储值卡扣款...");
-                                /* refund_vip_card(): 增加储值卡余额 + 记录退款交易 */
-                                refund_vip_card(vip_card->card_no, final_pay, sale_id,
-                                                g_current_user_id, "支付失败退款");
-                                print_warning("储值卡已退款 ¥%.2f", final_pay);
-                            }
+                        /* Sale, inventory, member points, card balance and the
+                         * card transaction are committed by one AbyssDB UOW. */
+                        if (complete_sale_with_vip(
+                                sale_id, method, member_pct, override_amount,
+                                final_pay, vip_card->card_no) == 0) {
+                            (void)sm_service_vip_card_get(vip_card->card_no,
+                                                          vip_card);
+                            print_success("储值卡支付完成！");
+                            print_success("消费金额: ¥%.2f，余额: ¥%.2f",
+                                          final_pay, vip_card->balance);
                         } else {
-                            print_error("储值卡扣款失败");
+                            print_error("储值卡支付失败，销售与扣款均未提交");
                         }
                     }
                     break;
@@ -1110,7 +1078,7 @@ void show_purchase_menu(void) {
 
                 /* create_purchase(): 创建采购订单
                  *   内部: 分配自增 ID → 设置状态=PURCHASE_PENDING → 加入 g_purchases 链表
-                 *   → 写入事务日志（transaction.log）
+                 *   → 写入 AbyssDB 审计日志
                  *   返回: 新订单 ID */
                 int purchase_id = create_purchase(&pur);
                 print_success("采购订单已创建，订单号: %d", purchase_id);
@@ -1142,10 +1110,8 @@ void show_purchase_menu(void) {
                         item.quantity = qty;
                         item.price = price;
                         
-                        /* add_purchase_item(): 分配自增 ID → 加入 g_purchase_items 链表
-                         * save_purchase_item(): 将明细追加写入 data/purchase_item.txt */
+                        /* add_purchase_item(): 在 AbyssDB 中分配 ID 并提交明细。 */
                         add_purchase_item(purchase_id, &item);
-                        save_purchase_item(&item);
                         print_success("已添加: %s x %.0f", prod->name, qty);
                     }
                 }
@@ -1196,8 +1162,7 @@ void show_purchase_menu(void) {
 
                 if (op == 1) {
                     if (confirm_action("确认审批通过该订单？")) {
-                        /* approve_purchase(): 校验状态=PENDING → 设为 APPROVED
-                         *   → 计算采购总金额 → 写入事务日志 → 保存到 purchase.txt */
+                        /* approve_purchase(): 校验状态并在数据库中原子更新索引。 */
                         if (approve_purchase(id, g_current_user_id) == 0) {
                             print_success("审批通过");
                         }
@@ -1223,8 +1188,8 @@ void show_purchase_menu(void) {
                      *   1. 校验订单状态 = APPROVED
                      *   2. 遍历采购明细（get_purchase_items）
                      *   3. 对每个明细商品: prod->stock += quantity（增加库存）
-                     *   4. 记录库存变动日志（record_stock_log → stock_log.txt）
-                     *   5. 更新订单状态为 COMPLETED → 保存到 purchase.txt
+                     *   4. 记录库存变动日志（record_stock_log → AbyssDB）
+                     *   5. 订单、明细、商品、批次和库存流水一次提交
                      *   返回: 0 成功, -1 失败 */
                     if (receive_purchase(id, g_current_user_id) == 0) {
                         print_success("收货完成，已入库");
@@ -1369,7 +1334,7 @@ void show_report_menu(void) {
                 if (days <= 0) days = 7;
                 /* get_date_range(): 计算时间范围 range = [now - days*24h, now] */
                 get_date_range(&range, days);
-                /* generate_sales_report(): 从 sales.txt 读取数据
+                /* generate_sales_report(): 从完成订单索引读取数据
                  *   → 按时间区间筛选已完成订单 → 统计订单数/销售额/优惠/支付方式分布
                  *   → 打印到控制台 */
                 generate_sales_report(range.start, range.end, "控制台");
@@ -1389,7 +1354,7 @@ void show_report_menu(void) {
                 int days = get_safe_int("统计天数: ", 1, 365);
                 if (days <= 0) days = 30;
                 get_date_range(&range, days);
-                /* generate_purchase_report(): 遍历 g_purchases 链表
+                /* generate_purchase_report(): 查询采购 repository
                  *   → 按时间区间筛选 → 按状态(待审核/已审核/已完成)分类统计 */
                 generate_purchase_report(range.start, range.end, "控制台");
                 wait_for_key();
@@ -1402,8 +1367,8 @@ void show_report_menu(void) {
                 if (days <= 0) days = 30;
                 get_date_range(&range, days);
                 /* generate_profit_loss_report(): 最复杂的报表
-                 *   1. 从 sales.txt 统计销售收入和优惠
-                 *   2. 从 stock_log.txt 提取"出库"记录计算销售成本(COGS)
+                 *   1. 从完成订单索引统计销售收入和优惠
+                 *   2. 从库存账本索引提取"出库"记录计算销售成本(COGS)
                  *   3. 从 g_config.monthly_fixed_cost 摊销固定成本
                  *   4. 计算毛利 = 收入 - COGS, 净利 = 毛利 - 固定成本 */
                 generate_profit_loss_report(range.start, range.end);
@@ -1466,17 +1431,14 @@ void show_system_menu(void) {
 
             /* 备份的文件列表 */
             const char *data_files[] = {
-                "employee.txt", "product.txt", "supplier.txt", "member.txt",
-                "sales.txt", "sale_item.txt", "pending_sales.txt",
-                "purchase.txt", "purchase_item.txt", "schedule.txt",
-                "stock_log.txt", "transaction.log", "config.txt",
-                "daily_settlement.txt", "combo.txt", "combo_item.txt",
-                "batch.txt", "promotion.txt", "store.txt", "store_stock.txt",
-                "transfer.txt", "transfer_item.txt",
-                "supplier_finance.txt", "payable.txt", "payment_record.txt",
-                "vipcard.txt", "vipcard_trans.txt",
+                "supermarket.abdb", "supermarket.abdb.journal",
                 NULL
             };
+
+            if (sm_app_context_checkpoint() != SM_REPO_OK) {
+                print_error("数据库 checkpoint 失败: %s", sm_app_last_message());
+                break;
+            }
 
             int copied = 0, failed = 0;
             for (int i = 0; data_files[i] != NULL; i++) {
@@ -1484,13 +1446,13 @@ void show_system_menu(void) {
                 snprintf(src_path, sizeof(src_path), "%s/%s", DATA_DIR, data_files[i]);
                 snprintf(dst_path, sizeof(dst_path), "%s/%s", backup_dir, data_files[i]);
 
-                FILE *src = fopen(src_path, "r");
+                FILE *src = fopen(src_path, "rb");
                 if (!src) {
                     /* 文件不存在不是错误（可能尚未创建） */
                     continue;
                 }
 
-                FILE *dst = fopen(dst_path, "w");
+                FILE *dst = fopen(dst_path, "wb");
                 if (!dst) {
                     fclose(src);
                     failed++;
@@ -1526,7 +1488,7 @@ void show_system_menu(void) {
             print_title_box_single("系统信息");
             print_info("超市管理系统 v1.0");
             print_info("基于 ANSI C 开发");
-            print_info("数据存储: 纯文本文件(.txt)");
+            print_info("数据存储: AbyssDB + 待迁移的扩展文本表");
             print_info("编译环境: GCC/MinGW");
             print_info("UI模块: 自定义美化界面");
             wait_for_key();
@@ -1685,7 +1647,7 @@ int main(void) {
     /* init_system(): 核心初始化
      *   → 创建 data/、tmp/、output/ 目录
      *   → 初始化 5 个哈希表（员工/商品/条码/供应商/会员手机号）
-     *   → 加载 config.txt 系统配置
+     *   → 打开 AbyssDB、执行首次迁移并加载系统配置
      *   → 加载基础数据（员工/商品/供应商/会员/日结单/批次/促销） */
     if (init_system() != 0) {
         print_error("系统初始化失败");
@@ -1693,13 +1655,11 @@ int main(void) {
     }
 
     /* 加载扩展数据（init_system 中未加载的模块） */
-    init_sale_id_counter();       /* 扫描 sales.txt + pending_sales.txt，初始化销售订单 ID 计数器 */
     load_schedules();             /* 加载排班数据 → g_schedules 链表 */
     load_pending_sales();         /* 加载挂单 → g_pending_sales 链表 */
-    load_purchases();             /* 加载采购订单 → g_purchases 链表 */
-    load_purchase_items();        /* 加载采购明细 → g_purchase_items 链表 */
+    load_purchases();             /* 从 AbyssDB 重建采购缓存 */
+    load_purchase_items();        /* 从 AbyssDB 重建采购明细缓存 */
     load_transaction_logs();      /* 加载事务日志 → g_transaction_logs 链表 */
-    load_stock_logs();            /* 加载库存变动日志 → g_stock_logs 链表 */
     load_combos();                /* 加载套装 → g_combos 链表 + g_combo_barcode_hash */
     load_stores();                /* 加载门店 → g_stores 链表（无文件时自动创建"总店"） */
     load_store_stocks();          /* 加载门店库存 → g_store_stocks 链表 */
@@ -1712,7 +1672,7 @@ int main(void) {
 
     /* 首次使用检测：如果系统中没有任何员工，自动创建默认管理员 */
     int emp_count = 0;
-    /* list_employees(): 遍历 g_employee_hash，返回所有在职员工的数组 */
+    /* list_employees(): 通过仓储游标返回所有在职员工 */
     Employee **emp_list = list_employees(&emp_count);
     free(emp_list);  /* 只需要数量，立即释放数组 */
 
@@ -1729,10 +1689,8 @@ int main(void) {
         generate_salt(admin.salt);
         /* hash_password(): 计算 SHA-256("admin123" + salt)，存入 password_hash */
         hash_password("admin123", admin.salt, admin.password_hash);
-        /* add_employee(): 分配自增 ID，插入 g_employee_hash */
+        /* add_employee(): 在事务中分配 ID 并持久化 */
         add_employee(&admin);
-        /* save_employees(): 将哈希表中所有员工全量写入 data/employee.txt */
-        save_employees();
         
         print_success("默认管理员已创建!");
         print_info("用户名: admin");
@@ -2166,7 +2124,7 @@ void show_transfer_menu(void) {
             edit_store_info();
             break;
         }
-        
+
         case 4: {
             int from_id = select_store("=== 选择源门店 ===");
             if (from_id < 0) break;

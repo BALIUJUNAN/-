@@ -34,6 +34,102 @@
 
 #include "supermarket.h"
 
+/* Stage 11 public store and transfer APIs are backed by AbyssDB. */
+#define create_store sm_legacy_create_store
+#define find_store_by_id sm_legacy_find_store_by_id
+#define find_store_by_name sm_legacy_find_store_by_name
+#define update_store sm_legacy_update_store
+#define delete_store sm_legacy_delete_store
+#define list_stores sm_legacy_list_stores
+#define list_active_stores sm_legacy_list_active_stores
+#define get_store_stock sm_legacy_get_store_stock
+#define set_store_stock sm_legacy_set_store_stock
+#define add_store_stock sm_legacy_add_store_stock
+#define reduce_store_stock sm_legacy_reduce_store_stock
+#define get_product_all_stores sm_legacy_get_product_all_stores
+#define load_stores sm_legacy_load_stores
+#define save_store sm_legacy_save_store
+#define save_all_stores sm_legacy_save_all_stores
+#define load_store_stocks sm_legacy_load_store_stocks
+#define save_store_stock sm_legacy_save_store_stock
+#define save_all_store_stocks sm_legacy_save_all_store_stocks
+#define create_transfer_order sm_legacy_create_transfer_order
+#define add_transfer_item sm_legacy_add_transfer_item
+#define find_transfer_order sm_legacy_find_transfer_order
+#define approve_transfer sm_legacy_approve_transfer
+#define reject_transfer sm_legacy_reject_transfer
+#define confirm_out_transfer sm_legacy_confirm_out_transfer
+#define confirm_in_transfer sm_legacy_confirm_in_transfer
+#define cancel_transfer sm_legacy_cancel_transfer
+#define list_transfers_by_status sm_legacy_list_transfers_by_status
+#define list_transfers_by_store sm_legacy_list_transfers_by_store
+#define load_transfers sm_legacy_load_transfers
+#define load_transfer_items sm_legacy_load_transfer_items
+#define save_transfer_order sm_legacy_save_transfer_order
+#define save_all_transfers sm_legacy_save_all_transfers
+#define save_transfer_item sm_legacy_save_transfer_item
+
+int sm_legacy_create_store(Store *);
+Store *sm_legacy_find_store_by_id(int);
+Store *sm_legacy_find_store_by_name(const char *);
+int sm_legacy_update_store(Store *);
+int sm_legacy_delete_store(int);
+Store **sm_legacy_list_stores(int *);
+Store **sm_legacy_list_active_stores(int *);
+int sm_legacy_get_store_stock(int, const char *);
+int sm_legacy_set_store_stock(int, const char *, int, int);
+int sm_legacy_add_store_stock(int, const char *, int, int, const char *);
+int sm_legacy_reduce_store_stock(int, const char *, int, int, const char *);
+StoreStock **sm_legacy_get_product_all_stores(const char *, int *);
+int sm_legacy_load_stores(void);
+int sm_legacy_save_store(Store *);
+int sm_legacy_save_all_stores(void);
+int sm_legacy_load_store_stocks(void);
+int sm_legacy_save_store_stock(StoreStock *);
+int sm_legacy_save_all_store_stocks(void);
+int sm_legacy_create_transfer_order(int, int, int, const char *);
+int sm_legacy_add_transfer_item(int, const char *, int);
+TransferOrder *sm_legacy_find_transfer_order(int);
+int sm_legacy_approve_transfer(int, int);
+int sm_legacy_reject_transfer(int, int, const char *);
+int sm_legacy_confirm_out_transfer(int, int);
+int sm_legacy_confirm_in_transfer(int, int);
+int sm_legacy_cancel_transfer(int, int);
+TransferOrder **sm_legacy_list_transfers_by_status(int, int *);
+TransferOrder **sm_legacy_list_transfers_by_store(int, int *);
+int sm_legacy_load_transfers(void);
+int sm_legacy_load_transfer_items(void);
+int sm_legacy_save_transfer_order(TransferOrder *);
+int sm_legacy_save_all_transfers(void);
+int sm_legacy_save_transfer_item(TransferItem *);
+
+/* Stage 9 keeps the former text implementation available under private
+ * compatibility symbols while the public API is implemented by AbyssDB. */
+#define get_supplier_finance sm_legacy_get_supplier_finance
+#define update_supplier_finance sm_legacy_update_supplier_finance
+#define list_supplier_finances sm_legacy_list_supplier_finances
+#define generate_payable sm_legacy_generate_payable
+#define create_payable sm_legacy_create_payable
+#define find_payable sm_legacy_find_payable
+#define list_payables_by_supplier sm_legacy_list_payables_by_supplier
+#define list_pending_payables sm_legacy_list_pending_payables
+#define record_payment sm_legacy_record_payment
+#define settle_supplier sm_legacy_settle_supplier
+#define list_payment_records sm_legacy_list_payment_records
+#define list_supplier_payment_records sm_legacy_list_supplier_payment_records
+#define generate_supplier_statement sm_legacy_generate_supplier_statement
+#define print_payables_summary sm_legacy_print_payables_summary
+#define load_supplier_finances sm_legacy_load_supplier_finances
+#define save_supplier_finance sm_legacy_save_supplier_finance
+#define load_payables sm_legacy_load_payables
+#define save_payable sm_legacy_save_payable
+#define load_payment_records sm_legacy_load_payment_records
+#define save_payment_record sm_legacy_save_payment_record
+
+int sm_legacy_save_supplier_finance(SupplierFinance *fin);
+int sm_legacy_save_payable(Payable *payable);
+int sm_legacy_save_payment_record(PaymentRecord *record);
+
 // ==================== 门店模块 ====================
 
 // ==================== 全局变量 ====================
