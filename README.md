@@ -1,6 +1,17 @@
 # 超市管理系统
 
-基于 ANSI C (C99) 开发的轻量化超市后台管理系统，采用纯文本文件持久化存储，无需数据库依赖。同时提供基于 Python Flask 的 Web 版本。
+基于 ANSI C (C99) 开发的轻量化超市后台管理系统，同时提供基于 Python Flask 的 Web 版本。C 终端版使用 [AbyssDB](https://github.com/BALIUJUNAN/ABYSS-DB) 作为嵌入式权威存储，无需独立数据库服务器；Web 版使用 SQLite。原有文本文件仅作为尚未迁移模块的兼容存储，或已迁移数据的首次导入来源。
+
+[![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
+[![Storage](https://img.shields.io/badge/storage-AbyssDB-blue.svg)](https://github.com/BALIUJUNAN/ABYSS-DB)
+
+## 项目关系
+
+这三个项目展示了从需求发现、通用引擎抽象到独立应用验证的完整过程：
+
+- [Abyssal Whispers](https://github.com/BALIUJUNAN/abyssal-whispers) 中的复杂状态、存档、时间线和恢复需求为 AbyssDB 提供了设计灵感；该游戏当前未直接使用 AbyssDB。
+- [AbyssDB](https://github.com/BALIUJUNAN/ABYSS-DB) 将这些理念抽象为独立的 C17 嵌入式状态存储引擎。
+- Abyss-Supermarket 是当前的实际集成应用，使用 AbyssDB 执行业务数据持久化、事务提交、遗留数据迁移、持久化计数器和审计记录。
 
 ## 特性亮点
 
@@ -9,7 +20,7 @@
 - **安全密码输入**：隐藏式密码输入，防止密码泄露
 - **操作确认机制**：关键操作二次确认，降低误操作风险
 - **模块化架构**：UI 与业务逻辑分离，易于维护扩展
-- **轻量级部署**：纯文本存储，无数据库依赖，编译后单文件运行
+- **轻量级部署**：C 终端版集成 AbyssDB，无需部署独立数据库服务器
 - **双版本支持**：C 终端版 + Python Flask Web 版，满足不同使用场景
 
 ## 系统要求
@@ -442,9 +453,11 @@ python app.py
 2. 写入临时文件 `.tmp`
 3. `rename()` 原子替换原文件
 
-## AbyssDB V1 存储状态
+## AbyssDB 集成状态
 
 12 阶段 C 语言重构已完成。员工、商品、供应商、会员、销售、库存台账、批次、采购、供应商财务、储值卡、门店、调拨、促销、商品套装、排班、日结和审计记录均使用 `data/supermarket.abdb` 作为运行时权威存储。
+
+当前代码通过 `ABYSS_ROOT` 指向 AbyssDB 源码目录，编译并链接其公开 C API。为保持可复现性，集成时应使用 AbyssDB 的已发布版本或记录明确的提交号。
 
 旧版业务文本文件仅作为首次迁移输入。正常应用的创建、更新、删除、加载、保存、报表和备份路径不会重写它们。导入前验证完整源数据集，在一个事务中执行迁移，保留遗留 ID，推进计数器水位线，提交后仅写入持久的每阶段完成标记。
 
@@ -452,4 +465,4 @@ python app.py
 
 ## 许可证
 
-MIT License
+本项目使用 [MIT License](LICENSE)。项目所使用的 AbyssDB、Python 依赖及其他第三方组件仍适用各自的许可证。
